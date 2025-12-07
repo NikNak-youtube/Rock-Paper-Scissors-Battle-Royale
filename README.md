@@ -70,6 +70,8 @@ When two entities collide, the winner converts the loser to its own type. The ba
 - **Count -/+** - Adjust initial entity count per type (1-500)
 - **Graph: ON/OFF** - Toggle population data recording
 - **Open Graph** - Open real-time population graph window
+- **Edges: Wrap/Bounce** - Toggle between edge wrapping and bouncing
+- **Record: OFF / REC ●** - Toggle frame recording for video creation
 
 ## 📁 Project Structure
 
@@ -80,6 +82,7 @@ Rock-Paper-Sissors-Battle-Royale/
 │   ├── boulder-clipart-transparent-background-rock-1-3961670665.png
 │   ├── Paper-Sheet-PNG-Transparent-Background-3062699109.png
 │   └── scissors_PNG28-2679021845.png
+├── recordings/          # Frame recordings (auto-created)
 ├── requirements.txt     # Python dependencies
 ├── .gitignore
 └── README.md
@@ -107,6 +110,13 @@ ENTITY_SPEED = 2              # Base movement speed
 INITIAL_COUNT = 15            # Starting count per type
 SAME_TYPE_REPEL_RADIUS = 50   # Soft collision radius
 SAME_TYPE_REPEL_STRENGTH = 0.5  # Repulsion force strength
+
+# Edge behavior settings
+EDGE_WRAP = False             # True = wrap around, False = bounce
+
+# Recording settings
+RECORDING_ENABLED = False     # Save frames for video creation
+RECORDING_FOLDER = "recordings"  # Output folder for frames
 
 # Evolution settings
 EVOLUTION_ENABLED = True      # Toggle evolution on/off by default
@@ -232,6 +242,30 @@ The UI panel shows:
 - Total entity count
 - Initial count per type setting
 - Interactive control buttons
+
+## 🎬 Video Recording
+
+Create videos of your simulations using the built-in frame recording:
+
+1. Click **"Record: OFF"** to start recording (button shows **"REC ●"**)
+2. Run your simulation
+3. Click **"REC ●"** to stop recording
+4. Use ffmpeg to create a video:
+
+```bash
+ffmpeg -framerate 60 -i recordings/YYYYMMDD_HHMMSS/frame_%06d.png -c:v libx264 -pix_fmt yuv420p output.mp4
+```
+
+Each recording session creates a timestamped folder with PNG frames.
+
+## 🔄 Edge Behavior
+
+Toggle between two edge behaviors:
+
+- **Bounce** (default): Entities bounce off screen edges
+- **Wrap**: Entities wrap around to the opposite side (toroidal space)
+
+Edge wrapping creates interesting dynamics as entities can "escape" through walls!
 
 ## 🤝 Contributing
 

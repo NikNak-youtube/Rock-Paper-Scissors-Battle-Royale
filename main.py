@@ -7,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 import queue
 import numpy as np
 import warnings
+from datetime import datetime
 
 # Suppress CuPy warnings about multiple installations
 warnings.filterwarnings('ignore', message='.*CuPy.*multiple.*packages.*')
@@ -75,6 +76,13 @@ ENTITY_SPEED = 2
 INITIAL_COUNT = 15  # Initial count per type
 SAME_TYPE_REPEL_RADIUS = 50  # Radius for soft collision between same types
 SAME_TYPE_REPEL_STRENGTH = 0.5  # How strongly same types push each other away
+
+# Edge behavior settings
+EDGE_WRAP = False  # If True, entities wrap around edges; if False, they bounce
+
+# Recording settings
+RECORDING_ENABLED = False  # If True, save every frame as PNG for video creation
+RECORDING_FOLDER = "recordings"  # Base folder for recordings
 
 # Evolution settings
 EVOLUTION_ENABLED = True  # Toggle evolution on/off
@@ -242,7 +250,7 @@ class Entity:
         else:
             self.scaled_image = None
         
-    def update(self, entities, screen_width, screen_height):
+    def update(self, entities, screen_width, screen_height, edge_wrap=False):
         # Find nearest threat and nearest prey
         nearest_threat = None
         nearest_threat_dist = float('inf')
@@ -328,20 +336,32 @@ class Entity:
         self.x += self.vx
         self.y += self.vy
         
-        # Bounce off walls (using individual size)
+        # Handle edges (wrap or bounce)
         margin = int(self.size) // 2
-        if self.x < margin:
-            self.x = margin
-            self.vx *= -1
-        if self.x > screen_width - margin:
-            self.x = screen_width - margin
-            self.vx *= -1
-        if self.y < margin:
-            self.y = margin
-            self.vy *= -1
-        if self.y > screen_height - margin:
-            self.y = screen_height - margin
-            self.vy *= -1
+        if edge_wrap:
+            # Wrap around edges
+            if self.x < -margin:
+                self.x = screen_width + margin
+            elif self.x > screen_width + margin:
+                self.x = -margin
+            if self.y < -margin:
+                self.y = screen_height + margin
+            elif self.y > screen_height + margin:
+                self.y = -margin
+        else:
+            # Bounce off walls (using individual size)
+            if self.x < margin:
+                self.x = margin
+                self.vx *= -1
+            if self.x > screen_width - margin:
+                self.x = screen_width - margin
+                self.vx *= -1
+            if self.y < margin:
+                self.y = margin
+                self.vy *= -1
+            if self.y > screen_height - margin:
+                self.y = screen_height - margin
+                self.vy *= -1
     
     def distance_to(self, other):
         return math.sqrt((self.x - other.x)**2 + (self.y - other.y)**2)
@@ -401,6 +421,14 @@ class Game:
         self.speed_multiplier = 1.0
         self.evolution_enabled = EVOLUTION_ENABLED  # Toggle for evolution
         self.initial_count = INITIAL_COUNT  # Adjustable initial count per type
+        
+        # Edge wrapping
+        self.edge_wrap = EDGE_WRAP  # Toggle between wrap and bounce
+        
+        # Recording settings
+        self.recording_enabled = RECORDING_ENABLED  # Toggle for frame recording
+        self.recording_folder = None  # Will be set when recording starts
+        self.recording_frame = 0  # Frame counter for recorded files
         
         # Statistics
         self.conversions = {ROCK: 0, PAPER: 0, SCISSORS: 0}
@@ -547,6 +575,22 @@ class Game:
                 'text': 'Open Graph' if not self.graph_window_open else 'Graph Open',
                 'action': 'show_graph'
             })
+            y += button_spacing
+        
+        # Edge wrap toggle
+        buttons.append({
+            'rect': pygame.Rect(button_x, y, button_width, button_height),
+            'text': 'Edges: Wrap' if self.edge_wrap else 'Edges: Bounce',
+            'action': 'toggle_wrap'
+        })
+        y += button_spacing
+        
+        # Recording toggle
+        buttons.append({
+            'rect': pygame.Rect(button_x, y, button_width, button_height),
+            'text': 'REC ●' if self.recording_enabled else 'Record: OFF',
+            'action': 'toggle_recording'
+        })
         
         self.buttons = buttons
     
@@ -662,11 +706,46 @@ class Game:
         elif action == 'show_graph':
             self.show_population_graph()
             self.update_buttons()
+        elif action == 'toggle_wrap':
+            self.edge_wrap = not self.edge_wrap
+            self.update_buttons()
+        elif action == 'toggle_recording':
+            self.recording_enabled = not self.recording_enabled
+            if self.recording_enabled:
+                self.start_recording()
+            else:
+                self.stop_recording()
+            self.update_buttons()
     
-    def update_entity_batch(self, entities_batch, all_entities, width, height):
+    def start_recording(self):
+        """Create a timestamped folder for recording frames"""
+        base_path = os.path.dirname(os.path.abspath(__file__))
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.recording_folder = os.path.join(base_path, RECORDING_FOLDER, timestamp)
+        os.makedirs(self.recording_folder, exist_ok=True)
+        self.recording_frame = 0
+        print(f"Recording started: {self.recording_folder}")
+        print(f"To create video: ffmpeg -framerate {FPS} -i {self.recording_folder}/frame_%06d.png -c:v libx264 -pix_fmt yuv420p output.mp4")
+    
+    def stop_recording(self):
+        """Stop recording and print ffmpeg command"""
+        if self.recording_folder:
+            print(f"Recording stopped. {self.recording_frame} frames saved.")
+            print(f"Create video with: ffmpeg -framerate {FPS} -i {self.recording_folder}/frame_%06d.png -c:v libx264 -pix_fmt yuv420p output.mp4")
+        self.recording_folder = None
+        self.recording_frame = 0
+    
+    def save_frame(self):
+        """Save current frame as PNG"""
+        if self.recording_enabled and self.recording_folder:
+            filename = os.path.join(self.recording_folder, f"frame_{self.recording_frame:06d}.png")
+            pygame.image.save(self.screen, filename)
+            self.recording_frame += 1
+    
+    def update_entity_batch(self, entities_batch, all_entities, width, height, edge_wrap):
         """Update a batch of entities (called in thread)"""
         for entity in entities_batch:
-            entity.update(all_entities, width, height)
+            entity.update(all_entities, width, height, edge_wrap)
     
     def gpu_update_entities(self):
         """GPU-accelerated entity position and velocity updates"""
@@ -789,24 +868,39 @@ class Game:
         # Update positions
         new_positions = positions + new_velocities
         
-        # Bounce off walls
+        # Handle edges (wrap or bounce)
         width = self.game_area.width
         height = self.game_area.height
         margins = sizes / 2
         
-        # X bounds
-        hit_left = new_positions[:, 0] < margins
-        hit_right = new_positions[:, 0] > width - margins
-        new_positions[:, 0] = xp.where(hit_left, margins, new_positions[:, 0])
-        new_positions[:, 0] = xp.where(hit_right, width - margins, new_positions[:, 0])
-        new_velocities[:, 0] = xp.where(hit_left | hit_right, -new_velocities[:, 0], new_velocities[:, 0])
-        
-        # Y bounds
-        hit_top = new_positions[:, 1] < margins
-        hit_bottom = new_positions[:, 1] > height - margins
-        new_positions[:, 1] = xp.where(hit_top, margins, new_positions[:, 1])
-        new_positions[:, 1] = xp.where(hit_bottom, height - margins, new_positions[:, 1])
-        new_velocities[:, 1] = xp.where(hit_top | hit_bottom, -new_velocities[:, 1], new_velocities[:, 1])
+        if self.edge_wrap:
+            # Wrap around edges
+            # X wrapping
+            wrap_left = new_positions[:, 0] < -margins
+            wrap_right = new_positions[:, 0] > width + margins
+            new_positions[:, 0] = xp.where(wrap_left, width + margins, new_positions[:, 0])
+            new_positions[:, 0] = xp.where(wrap_right, -margins, new_positions[:, 0])
+            
+            # Y wrapping
+            wrap_top = new_positions[:, 1] < -margins
+            wrap_bottom = new_positions[:, 1] > height + margins
+            new_positions[:, 1] = xp.where(wrap_top, height + margins, new_positions[:, 1])
+            new_positions[:, 1] = xp.where(wrap_bottom, -margins, new_positions[:, 1])
+        else:
+            # Bounce off walls
+            # X bounds
+            hit_left = new_positions[:, 0] < margins
+            hit_right = new_positions[:, 0] > width - margins
+            new_positions[:, 0] = xp.where(hit_left, margins, new_positions[:, 0])
+            new_positions[:, 0] = xp.where(hit_right, width - margins, new_positions[:, 0])
+            new_velocities[:, 0] = xp.where(hit_left | hit_right, -new_velocities[:, 0], new_velocities[:, 0])
+            
+            # Y bounds
+            hit_top = new_positions[:, 1] < margins
+            hit_bottom = new_positions[:, 1] > height - margins
+            new_positions[:, 1] = xp.where(hit_top, margins, new_positions[:, 1])
+            new_positions[:, 1] = xp.where(hit_bottom, height - margins, new_positions[:, 1])
+            new_velocities[:, 1] = xp.where(hit_top | hit_bottom, -new_velocities[:, 1], new_velocities[:, 1])
         
         # Transfer back to CPU if using GPU
         if self.use_gpu:
@@ -837,7 +931,7 @@ class Game:
                     self.use_gpu = False
                     # Do CPU update for this frame
                     for entity in self.entities:
-                        entity.update(self.entities, self.game_area.width, self.game_area.height)
+                        entity.update(self.entities, self.game_area.width, self.game_area.height, self.edge_wrap)
             elif len(self.entities) > 50:
                 # CPU parallel entity updates using thread pool
                 batch_size = max(1, len(self.entities) // NUM_THREADS)
@@ -854,7 +948,8 @@ class Game:
                         batch, 
                         self.entities, 
                         self.game_area.width, 
-                        self.game_area.height
+                        self.game_area.height,
+                        self.edge_wrap
                     )
                     futures.append(future)
                 
@@ -864,7 +959,7 @@ class Game:
             else:
                 # Sequential update for small entity counts
                 for entity in self.entities:
-                    entity.update(self.entities, self.game_area.width, self.game_area.height)
+                    entity.update(self.entities, self.game_area.width, self.game_area.height, self.edge_wrap)
             
             # Check collisions (must be sequential to avoid race conditions)
             self.check_collisions()
@@ -1146,8 +1241,16 @@ class Game:
                 self.handle_events()
                 self.update()
                 self.draw()
+                
+                # Save frame if recording
+                if self.recording_enabled:
+                    self.save_frame()
+                
                 self.clock.tick(FPS)
         finally:
+            # Stop recording if active
+            if self.recording_enabled:
+                self.stop_recording()
             # Cleanup thread pool
             self.thread_pool.shutdown(wait=False)
             pygame.quit()
