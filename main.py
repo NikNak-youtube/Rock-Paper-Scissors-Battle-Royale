@@ -3,6 +3,8 @@ import random
 import math
 import os
 import threading
+from concurrent.futures import ThreadPoolExecutor
+import queue
 
 # Try to import matplotlib for optional graphing
 try:
@@ -17,6 +19,9 @@ except ImportError:
 
 # Initialize pygame
 pygame.init()
+
+# Threading settings
+NUM_THREADS = 4  # Number of worker threads for entity updates
 
 # Screen settings
 DEFAULT_SCREEN_WIDTH = 1200
@@ -385,6 +390,10 @@ class Game:
         self.graph_ax = None
         self.graph_lines = {}
         
+        # Thread pool for parallel entity updates
+        self.thread_pool = ThreadPoolExecutor(max_workers=NUM_THREADS)
+        self.entity_lock = threading.Lock()
+        
         # Buttons (will be created dynamically)
         self.buttons = []
         self.update_buttons()
@@ -623,6 +632,11 @@ class Game:
             self.show_population_graph()
             self.update_buttons()
     
+    def update_entity_batch(self, entities_batch, all_entities, width, height):
+        """Update a batch of entities (called in thread)"""
+        for entity in entities_batch:
+            entity.update(all_entities, width, height)
+    
     def update(self):
         if self.paused or self.game_over:
             return
@@ -630,11 +644,36 @@ class Game:
         # Update entities multiple times based on speed
         updates = max(1, int(self.speed_multiplier))
         for _ in range(updates):
-            # Update all entities
-            for entity in self.entities:
-                entity.update(self.entities, self.game_area.width, self.game_area.height)
+            # Parallel entity updates using thread pool
+            if len(self.entities) > 50:  # Only use threading for large entity counts
+                # Split entities into batches for parallel processing
+                batch_size = max(1, len(self.entities) // NUM_THREADS)
+                batches = [
+                    self.entities[i:i + batch_size] 
+                    for i in range(0, len(self.entities), batch_size)
+                ]
+                
+                # Submit all batches to thread pool
+                futures = []
+                for batch in batches:
+                    future = self.thread_pool.submit(
+                        self.update_entity_batch, 
+                        batch, 
+                        self.entities, 
+                        self.game_area.width, 
+                        self.game_area.height
+                    )
+                    futures.append(future)
+                
+                # Wait for all updates to complete
+                for future in futures:
+                    future.result()
+            else:
+                # Sequential update for small entity counts
+                for entity in self.entities:
+                    entity.update(self.entities, self.game_area.width, self.game_area.height)
             
-            # Check collisions
+            # Check collisions (must be sequential to avoid race conditions)
             self.check_collisions()
         
         # Record population for graphing
@@ -645,9 +684,9 @@ class Game:
             for entity_type in [ROCK, PAPER, SCISSORS]:
                 self.population_history[entity_type].append(counts[entity_type])
             
-            # Update real-time graph
+            # Update real-time graph in separate thread to avoid blocking
             if self.graph_window_open:
-                self.update_realtime_graph()
+                threading.Thread(target=self.update_realtime_graph, daemon=True).start()
         
         # Check for winner
         counts = self.count_entities()
@@ -748,7 +787,7 @@ class Game:
         plt.show(block=False)
     
     def update_realtime_graph(self):
-        """Update the real-time graph with current data"""
+        """Update the real-time graph with current data (thread-safe)"""
         if not self.graph_window_open or self.graph_fig is None:
             return
         
@@ -756,16 +795,20 @@ class Game:
             return
         
         try:
+            # Copy data to avoid race conditions
+            time_data = list(self.time_history)
+            pop_data = {t: list(self.population_history[t]) for t in [ROCK, PAPER, SCISSORS]}
+            
             # Update line data
             for entity_type in [ROCK, PAPER, SCISSORS]:
                 if entity_type in self.graph_lines:
                     self.graph_lines[entity_type].set_data(
-                        self.time_history, 
-                        self.population_history[entity_type]
+                        time_data, 
+                        pop_data[entity_type]
                     )
             
             # Adjust x-axis limits
-            max_time = max(self.time_history) if self.time_history else 10
+            max_time = max(time_data) if time_data else 10
             self.graph_ax.set_xlim(0, max(10, max_time + 1))
             
             # Adjust y-axis limits
@@ -909,13 +952,16 @@ class Game:
         self.screen.blit(restart_text, rect)
     
     def run(self):
-        while self.running:
-            self.handle_events()
-            self.update()
-            self.draw()
-            self.clock.tick(FPS)
-        
-        pygame.quit()
+        try:
+            while self.running:
+                self.handle_events()
+                self.update()
+                self.draw()
+                self.clock.tick(FPS)
+        finally:
+            # Cleanup thread pool
+            self.thread_pool.shutdown(wait=False)
+            pygame.quit()
 
 
 if __name__ == "__main__":

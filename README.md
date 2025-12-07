@@ -43,7 +43,7 @@ When two entities collide, the winner converts the loser to its own type. The ba
 
 3. **Install dependencies**
    ```bash
-   pip install pygame
+   pip install pygame matplotlib
    ```
 
 4. **Run the game**
@@ -59,21 +59,23 @@ When two entities collide, the winner converts the loser to its own type. The ba
 | **R** | Restart simulation |
 | **ESC** | Quit game |
 | **Left Click** (game area) | Add random entity at cursor |
+| **Drag window edges** | Resize window dynamically |
 
 ### UI Buttons
 - **Start/Restart** - Reset the simulation
 - **Pause/Resume** - Toggle pause state
 - **Speed: Nx** - Cycle through speed multipliers (0.5x, 1x, 2x, 4x)
-- **Add Rock** - Spawn a new rock entity
-- **Add Paper** - Spawn a new paper entity
-- **Add Scissors** - Spawn a new scissors entity
+- **Add Rock/Paper/Scissors** - Spawn specific entity types
 - **Evolution: ON/OFF** - Toggle evolutionary properties (restarts simulation)
+- **Count -/+** - Adjust initial entity count per type (1-500)
+- **Graph: ON/OFF** - Toggle population data recording
+- **Open Graph** - Open real-time population graph window
 
 ## 📁 Project Structure
 
 ```
 Rock-Paper-Sissors-Battle-Royale/
-├── main.py              # Main game file
+├── main.py              # Main game file (multithreaded)
 ├── images/              # Entity images
 │   ├── boulder-clipart-transparent-background-rock-1-3961670665.png
 │   ├── Paper-Sheet-PNG-Transparent-Background-3062699109.png
@@ -89,9 +91,15 @@ You can customize the simulation by modifying constants at the top of `main.py`:
 
 ```python
 # Screen settings
-SCREEN_WIDTH = 1200
-SCREEN_HEIGHT = 800
+DEFAULT_SCREEN_WIDTH = 1200
+DEFAULT_SCREEN_HEIGHT = 800
+MIN_SCREEN_WIDTH = 800
+MIN_SCREEN_HEIGHT = 600
+UI_PANEL_WIDTH = 200
 FPS = 60
+
+# Threading settings
+NUM_THREADS = 4  # Worker threads for parallel entity updates
 
 # Entity settings
 ENTITY_SIZE = 40              # Size of each entity
@@ -103,6 +111,7 @@ SAME_TYPE_REPEL_STRENGTH = 0.5  # Repulsion force strength
 # Evolution settings
 EVOLUTION_ENABLED = True      # Toggle evolution on/off by default
 MUTATION_RATE = 0.15          # How much properties can mutate (0-1)
+PROPERTY_BUDGET = 2.0         # Total budget for balanced properties
 MIN_SIZE = 20                 # Minimum entity size
 MAX_SIZE = 60                 # Maximum entity size
 MIN_SPEED = 1.0               # Minimum speed
@@ -115,6 +124,7 @@ MAX_ATTACK_DISTANCE = 400     # Maximum attack detection distance
 
 ## 🎨 Features
 
+- **Resizable Window** - Drag to resize, UI adapts dynamically
 - **Interactive GUI** - Full control panel with buttons and stats
 - **Real-time Statistics** - Track entity counts and conversions
 - **Speed Control** - Watch in slow-mo or fast-forward the action
@@ -123,6 +133,19 @@ MAX_ATTACK_DISTANCE = 400     # Maximum attack detection distance
 - **Soft Collision System** - Entities of the same type naturally spread out
 - **Game Over Screen** - Celebratory winner announcement
 - **Evolutionary Properties** - Optional evolution system with inheritance and mutation
+- **Real-time Graphing** - Live matplotlib population graph in separate window
+- **Multithreaded Updates** - Parallel entity processing for large simulations
+
+## 🧵 Multithreading
+
+The simulation uses multithreading for improved performance:
+
+- **Entity Updates**: When entity count exceeds 50, updates are parallelized across multiple worker threads using Python's `ThreadPoolExecutor`
+- **Graph Updates**: Real-time graph rendering runs in a separate thread to avoid blocking the main game loop
+- **Thread Pool**: Configurable number of worker threads (default: 4)
+- **Thread Safety**: Collision detection remains sequential to prevent race conditions
+
+This allows smooth performance even with hundreds of entities on screen.
 
 ## 🧬 Evolution System
 
@@ -135,10 +158,16 @@ When evolution is enabled, each entity has individual properties that evolve ove
 | **Flee Distance** | How far away threats trigger fleeing | 50-250 pixels |
 | **Attack Distance** | How far away prey is detected | 100-400 pixels |
 
+### Balanced Evolution
+Properties are **balanced** - they always sum to the same total. If one property increases, others must decrease:
+- Want to be fast? You'll sacrifice size, flee awareness, or attack range
+- Every advantage comes with a trade-off
+- This creates diverse, specialized entity "builds"
+
 ### How Evolution Works
-1. **Initial Spawn**: Entities start with random properties within defined ranges
+1. **Initial Spawn**: Entities start with random balanced properties
 2. **Inheritance**: When an entity wins a collision, the converted entity inherits the winner's properties
-3. **Mutation**: Inherited properties mutate slightly (±15% by default), introducing variation
+3. **Mutation**: Inherited properties mutate slightly (±15% by default), with compensation to maintain balance
 4. **Natural Selection**: Over time, successful traits spread through the population
 
 ### Emergent Behaviors
@@ -147,12 +176,28 @@ When evolution is enabled, each entity has individual properties that evolve ove
 - **Tank builds**: Large size makes it easier to catch prey
 - **Scout builds**: Small + fast entities that cover more ground
 
-## 📊 Statistics Display
+## 📊 Real-time Graphing
+
+Click **"Open Graph"** to open a live matplotlib window showing population dynamics:
+
+- **X-axis**: Time in seconds
+- **Y-axis**: Population count
+- **Three lines**: Rock (brown), Paper (gold), Scissors (gray)
+- **Auto-scaling**: Axes adjust automatically as data grows
+- **Non-blocking**: Graph updates in a separate thread
+
+The graph helps visualize:
+- Population oscillations (predator-prey dynamics)
+- Extinction events
+- Dominant strategy emergence
+
+## 📈 Statistics Display
 
 The UI panel shows:
 - Current count of each entity type
 - Number of conversions made by each type (in green)
 - Total entity count
+- Initial count per type setting
 - Interactive control buttons
 
 ## 🤝 Contributing
@@ -167,7 +212,7 @@ Contributions are welcome! Feel free to:
 ## 🙏 Acknowledgments
 
 - Inspired by viral Rock Paper Scissors battle royale simulations
-- Built with [Pygame](https://www.pygame.org/)
+- Built with [Pygame](https://www.pygame.org/) and [Matplotlib](https://matplotlib.org/)
 
 ---
 
