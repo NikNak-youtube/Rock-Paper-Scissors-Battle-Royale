@@ -344,6 +344,7 @@ class Game:
         self.winner = None
         self.speed_multiplier = 1.0
         self.evolution_enabled = EVOLUTION_ENABLED  # Toggle for evolution
+        self.initial_count = INITIAL_COUNT  # Adjustable initial count per type
         
         # Statistics
         self.conversions = {ROCK: 0, PAPER: 0, SCISSORS: 0}
@@ -418,6 +419,19 @@ class Game:
             'action': 'toggle_evolution'
         })
         
+        # Initial count adjustment buttons (smaller, side by side)
+        half_width = button_width // 2 - 5
+        buttons.append({
+            'rect': pygame.Rect(button_x, 650, half_width, button_height),
+            'text': 'Count -',
+            'action': 'count_down'
+        })
+        buttons.append({
+            'rect': pygame.Rect(button_x + half_width + 10, 650, half_width, button_height),
+            'text': 'Count +',
+            'action': 'count_up'
+        })
+        
         return buttons
     
     def reset_game(self):
@@ -429,7 +443,7 @@ class Game:
         
         # Create initial entities
         for entity_type in [ROCK, PAPER, SCISSORS]:
-            for _ in range(INITIAL_COUNT):
+            for _ in range(self.initial_count):
                 self.spawn_entity(entity_type)
     
     def spawn_entity(self, entity_type, x=None, y=None, parent=None):
@@ -501,6 +515,12 @@ class Game:
                 if button['action'] == 'toggle_evolution':
                     button['text'] = 'Evolution: ON' if self.evolution_enabled else 'Evolution: OFF'
             # Restart game with new setting
+            self.reset_game()
+        elif action == 'count_down':
+            self.initial_count = max(1, self.initial_count - 5)
+            self.reset_game()
+        elif action == 'count_up':
+            self.initial_count = min(500, self.initial_count + 5)
             self.reset_game()
     
     def update(self):
@@ -633,6 +653,10 @@ class Game:
             text_rect = text.get_rect(center=button['rect'].center)
             self.screen.blit(text, text_rect)
         
+        # Draw initial count display
+        count_text = self.font.render(f"Initial: {self.initial_count}", True, WHITE)
+        self.screen.blit(count_text, (panel_x, 700))
+        
         # Instructions
         instructions = [
             "Controls:",
@@ -642,7 +666,7 @@ class Game:
             "ESC - Quit"
         ]
         
-        y = 620
+        y = 740
         for line in instructions:
             text = self.small_font.render(line, True, WHITE)
             self.screen.blit(text, (panel_x, y))
