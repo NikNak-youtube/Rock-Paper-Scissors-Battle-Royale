@@ -31,6 +31,7 @@ SAME_TYPE_REPEL_STRENGTH = 0.5  # How strongly same types push each other away
 # Evolution settings
 EVOLUTION_ENABLED = True  # Toggle evolution on/off
 MUTATION_RATE = 0.15  # How much properties can mutate (0-1)
+PROPERTY_BUDGET = 2.0  # Total budget for all normalized properties (each prop is 0-1, 4 props, avg 0.5 each = 2.0)
 MIN_SIZE = 20  # Minimum entity size
 MAX_SIZE = 60  # Maximum entity size
 MIN_SPEED = 1.0  # Minimum speed
@@ -60,6 +61,9 @@ TYPE_COLORS = {
 }
 
 class Entity:
+    # Property count for balanced distribution
+    NUM_PROPERTIES = 4
+    
     def __init__(self, x, y, entity_type, image=None, parent=None, evolution_enabled=True):
         self.x = x
         self.y = y
@@ -69,25 +73,19 @@ class Entity:
         self.target = None
         self.flee_from = None
         
-        # Evolutionary properties
+        # Evolutionary properties (stored as normalized 0-1 values internally)
         if evolution_enabled and parent:
-            # Inherit from parent with mutation
-            self.size = self._mutate(parent.size, MIN_SIZE, MAX_SIZE)
-            self.speed = self._mutate(parent.speed, MIN_SPEED, MAX_SPEED)
-            self.flee_distance = self._mutate(parent.flee_distance, MIN_FLEE_DISTANCE, MAX_FLEE_DISTANCE)
-            self.attack_distance = self._mutate(parent.attack_distance, MIN_ATTACK_DISTANCE, MAX_ATTACK_DISTANCE)
+            # Inherit from parent with balanced mutation
+            self._inherit_balanced(parent)
         elif evolution_enabled:
-            # Random initial properties
-            self.size = random.uniform(MIN_SIZE, MAX_SIZE)
-            self.speed = random.uniform(MIN_SPEED, MAX_SPEED)
-            self.flee_distance = random.uniform(MIN_FLEE_DISTANCE, MAX_FLEE_DISTANCE)
-            self.attack_distance = random.uniform(MIN_ATTACK_DISTANCE, MAX_ATTACK_DISTANCE)
+            # Random initial properties that sum to PROPERTY_BUDGET
+            self._init_random_balanced()
         else:
-            # Default properties (no evolution)
-            self.size = ENTITY_SIZE
-            self.speed = ENTITY_SPEED
-            self.flee_distance = 150
-            self.attack_distance = float('inf')
+            # Default properties (no evolution) - all at midpoint
+            self._size_norm = 0.5
+            self._speed_norm = 0.5
+            self._flee_norm = 0.5
+            self._attack_norm = 0.5
         
         self.vx = random.uniform(-self.speed, self.speed)
         self.vy = random.uniform(-self.speed, self.speed)
@@ -95,8 +93,95 @@ class Entity:
         # Update image size if evolution enabled
         self._update_scaled_image()
     
+    def _init_random_balanced(self):
+        """Initialize with random values that sum to PROPERTY_BUDGET"""
+        # Generate 4 random values
+        values = [random.random() for _ in range(self.NUM_PROPERTIES)]
+        # Normalize to sum to PROPERTY_BUDGET
+        total = sum(values)
+        scale = PROPERTY_BUDGET / total
+        values = [v * scale for v in values]
+        # Clamp each to 0-1 range and redistribute excess
+        values = self._clamp_and_redistribute(values)
+        
+        self._size_norm, self._speed_norm, self._flee_norm, self._attack_norm = values
+    
+    def _inherit_balanced(self, parent):
+        """Inherit properties with balanced mutation - if one goes up, others go down"""
+        # Get parent's normalized values
+        values = [
+            parent._size_norm,
+            parent._speed_norm,
+            parent._flee_norm,
+            parent._attack_norm
+        ]
+        
+        # Pick a random property to mutate
+        mutate_idx = random.randint(0, self.NUM_PROPERTIES - 1)
+        mutation = random.uniform(-MUTATION_RATE, MUTATION_RATE)
+        
+        # Apply mutation to selected property
+        values[mutate_idx] += mutation
+        
+        # Distribute the opposite change to other properties
+        compensation = -mutation / (self.NUM_PROPERTIES - 1)
+        for i in range(self.NUM_PROPERTIES):
+            if i != mutate_idx:
+                values[i] += compensation
+        
+        # Clamp and redistribute to ensure valid range
+        values = self._clamp_and_redistribute(values)
+        
+        self._size_norm, self._speed_norm, self._flee_norm, self._attack_norm = values
+    
+    def _clamp_and_redistribute(self, values):
+        """Clamp values to 0-1 and redistribute excess to maintain sum"""
+        # Clamp and track excess
+        for _ in range(10):  # Iterate to handle cascading clamps
+            excess = 0
+            clamped_count = 0
+            
+            for i in range(len(values)):
+                if values[i] < 0:
+                    excess += values[i]
+                    values[i] = 0
+                    clamped_count += 1
+                elif values[i] > 1:
+                    excess += values[i] - 1
+                    values[i] = 1
+                    clamped_count += 1
+            
+            if abs(excess) < 0.001 or clamped_count == len(values):
+                break
+            
+            # Redistribute excess to non-clamped values
+            unclamped = [i for i in range(len(values)) if 0 < values[i] < 1]
+            if unclamped:
+                share = excess / len(unclamped)
+                for i in unclamped:
+                    values[i] += share
+        
+        return values
+    
+    # Property getters that convert normalized values to actual ranges
+    @property
+    def size(self):
+        return MIN_SIZE + self._size_norm * (MAX_SIZE - MIN_SIZE)
+    
+    @property
+    def speed(self):
+        return MIN_SPEED + self._speed_norm * (MAX_SPEED - MIN_SPEED)
+    
+    @property
+    def flee_distance(self):
+        return MIN_FLEE_DISTANCE + self._flee_norm * (MAX_FLEE_DISTANCE - MIN_FLEE_DISTANCE)
+    
+    @property
+    def attack_distance(self):
+        return MIN_ATTACK_DISTANCE + self._attack_norm * (MAX_ATTACK_DISTANCE - MIN_ATTACK_DISTANCE)
+    
     def _mutate(self, value, min_val, max_val):
-        """Mutate a value with some randomness"""
+        """Mutate a value with some randomness (legacy, kept for compatibility)"""
         mutation = random.uniform(-MUTATION_RATE, MUTATION_RATE) * (max_val - min_val)
         new_value = value + mutation
         return max(min_val, min(max_val, new_value))
@@ -232,10 +317,7 @@ class Entity:
     
     def inherit_properties_from(self, parent):
         """Copy evolutionary properties from a parent (winner in collision)"""
-        self.size = self._mutate(parent.size, MIN_SIZE, MAX_SIZE)
-        self.speed = self._mutate(parent.speed, MIN_SPEED, MAX_SPEED)
-        self.flee_distance = self._mutate(parent.flee_distance, MIN_FLEE_DISTANCE, MAX_FLEE_DISTANCE)
-        self.attack_distance = self._mutate(parent.attack_distance, MIN_ATTACK_DISTANCE, MAX_ATTACK_DISTANCE)
+        self._inherit_balanced(parent)
         self._update_scaled_image()
 
 
