@@ -684,9 +684,9 @@ class Game:
             for entity_type in [ROCK, PAPER, SCISSORS]:
                 self.population_history[entity_type].append(counts[entity_type])
             
-            # Update real-time graph in separate thread to avoid blocking
+            # Update real-time graph (must be on main thread for matplotlib)
             if self.graph_window_open:
-                threading.Thread(target=self.update_realtime_graph, daemon=True).start()
+                self.update_realtime_graph()
         
         # Check for winner
         counts = self.count_entities()
@@ -787,7 +787,7 @@ class Game:
         plt.show(block=False)
     
     def update_realtime_graph(self):
-        """Update the real-time graph with current data (thread-safe)"""
+        """Update the real-time graph with current data"""
         if not self.graph_window_open or self.graph_fig is None:
             return
         
@@ -795,20 +795,16 @@ class Game:
             return
         
         try:
-            # Copy data to avoid race conditions
-            time_data = list(self.time_history)
-            pop_data = {t: list(self.population_history[t]) for t in [ROCK, PAPER, SCISSORS]}
-            
             # Update line data
             for entity_type in [ROCK, PAPER, SCISSORS]:
                 if entity_type in self.graph_lines:
                     self.graph_lines[entity_type].set_data(
-                        time_data, 
-                        pop_data[entity_type]
+                        self.time_history, 
+                        self.population_history[entity_type]
                     )
             
             # Adjust x-axis limits
-            max_time = max(time_data) if time_data else 10
+            max_time = max(self.time_history) if self.time_history else 10
             self.graph_ax.set_xlim(0, max(10, max_time + 1))
             
             # Adjust y-axis limits
@@ -819,9 +815,9 @@ class Game:
             )
             self.graph_ax.set_ylim(0, max(10, max_pop + 5))
             
-            # Redraw
+            # Redraw - use pause to process events
             self.graph_fig.canvas.draw_idle()
-            self.graph_fig.canvas.flush_events()
+            plt.pause(0.001)  # Small pause to process matplotlib events
         except Exception as e:
             # Graph window might have been closed
             self.graph_window_open = False
