@@ -2,13 +2,28 @@ import pygame
 import random
 import math
 import os
+import threading
+
+# Try to import matplotlib for optional graphing
+try:
+    import matplotlib
+    matplotlib.use('TkAgg')  # Use interactive backend
+    import matplotlib.pyplot as plt
+    from matplotlib.animation import FuncAnimation
+    MATPLOTLIB_AVAILABLE = True
+except ImportError:
+    MATPLOTLIB_AVAILABLE = False
+    print("matplotlib not available - graphing disabled")
 
 # Initialize pygame
 pygame.init()
 
 # Screen settings
-SCREEN_WIDTH = 1200
-SCREEN_HEIGHT = 800
+DEFAULT_SCREEN_WIDTH = 1200
+DEFAULT_SCREEN_HEIGHT = 800
+MIN_SCREEN_WIDTH = 800
+MIN_SCREEN_HEIGHT = 600
+UI_PANEL_WIDTH = 200  # Fixed width for UI panel
 FPS = 60
 
 # Colors
@@ -323,15 +338,23 @@ class Entity:
 
 class Game:
     def __init__(self):
-        self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
+        # Dynamic screen dimensions
+        self.screen_width = DEFAULT_SCREEN_WIDTH
+        self.screen_height = DEFAULT_SCREEN_HEIGHT
+        
+        # Create resizable window
+        self.screen = pygame.display.set_mode(
+            (self.screen_width, self.screen_height), 
+            pygame.RESIZABLE
+        )
         pygame.display.set_caption("Rock Paper Scissors - Battle Royale")
         self.clock = pygame.time.Clock()
         self.font = pygame.font.Font(None, 36)
         self.small_font = pygame.font.Font(None, 24)
         self.title_font = pygame.font.Font(None, 72)
         
-        # Game area (leaving space for UI)
-        self.game_area = pygame.Rect(0, 0, SCREEN_WIDTH - 200, SCREEN_HEIGHT)
+        # Game area (leaving space for UI) - will be updated on resize
+        self.update_layout()
         
         # Load images
         self.images = self.load_images()
@@ -349,8 +372,22 @@ class Game:
         # Statistics
         self.conversions = {ROCK: 0, PAPER: 0, SCISSORS: 0}
         
-        # Buttons
-        self.buttons = self.create_buttons()
+        # Population history for graphing
+        self.population_history = {ROCK: [], PAPER: [], SCISSORS: []}
+        self.time_history = []
+        self.frame_count = 0
+        self.graphing_enabled = False  # Toggle for live graphing
+        self.record_interval = 10  # Record population every N frames
+        
+        # Real-time graph window
+        self.graph_window_open = False
+        self.graph_fig = None
+        self.graph_ax = None
+        self.graph_lines = {}
+        
+        # Buttons (will be created dynamically)
+        self.buttons = []
+        self.update_buttons()
         
         # Initialize game
         self.reset_game()
@@ -377,62 +414,106 @@ class Game:
         
         return images
     
-    def create_buttons(self):
+    def update_layout(self):
+        """Update game area and UI positions based on current screen size"""
+        self.game_area = pygame.Rect(0, 0, self.screen_width - UI_PANEL_WIDTH, self.screen_height)
+    
+    def update_buttons(self):
+        """Recreate buttons with positions based on current screen size"""
         buttons = []
-        button_x = SCREEN_WIDTH - 180
-        button_width = 160
-        button_height = 40
+        button_x = self.screen_width - UI_PANEL_WIDTH + 10
+        button_width = UI_PANEL_WIDTH - 20
+        button_height = 35
+        button_spacing = 40
+        
+        # Start buttons after the stats section (around y=250)
+        start_y = 250
+        y = start_y
         
         buttons.append({
-            'rect': pygame.Rect(button_x, 300, button_width, button_height),
+            'rect': pygame.Rect(button_x, y, button_width, button_height),
             'text': 'Start/Restart',
             'action': 'restart'
         })
+        y += button_spacing
+        
         buttons.append({
-            'rect': pygame.Rect(button_x, 350, button_width, button_height),
+            'rect': pygame.Rect(button_x, y, button_width, button_height),
             'text': 'Pause/Resume',
             'action': 'pause'
         })
+        y += button_spacing
+        
         buttons.append({
-            'rect': pygame.Rect(button_x, 400, button_width, button_height),
-            'text': 'Speed: 1x',
+            'rect': pygame.Rect(button_x, y, button_width, button_height),
+            'text': f'Speed: {self.speed_multiplier}x',
             'action': 'speed'
         })
+        y += button_spacing
+        
         buttons.append({
-            'rect': pygame.Rect(button_x, 450, button_width, button_height),
+            'rect': pygame.Rect(button_x, y, button_width, button_height),
             'text': 'Add Rock',
             'action': 'add_rock'
         })
+        y += button_spacing
+        
         buttons.append({
-            'rect': pygame.Rect(button_x, 500, button_width, button_height),
+            'rect': pygame.Rect(button_x, y, button_width, button_height),
             'text': 'Add Paper',
             'action': 'add_paper'
         })
+        y += button_spacing
+        
         buttons.append({
-            'rect': pygame.Rect(button_x, 550, button_width, button_height),
+            'rect': pygame.Rect(button_x, y, button_width, button_height),
             'text': 'Add Scissors',
             'action': 'add_scissors'
         })
+        y += button_spacing
+        
         buttons.append({
-            'rect': pygame.Rect(button_x, 600, button_width, button_height),
-            'text': 'Evolution: ON' if EVOLUTION_ENABLED else 'Evolution: OFF',
+            'rect': pygame.Rect(button_x, y, button_width, button_height),
+            'text': 'Evolution: ON' if self.evolution_enabled else 'Evolution: OFF',
             'action': 'toggle_evolution'
         })
+        y += button_spacing
         
         # Initial count adjustment buttons (smaller, side by side)
         half_width = button_width // 2 - 5
         buttons.append({
-            'rect': pygame.Rect(button_x, 650, half_width, button_height),
+            'rect': pygame.Rect(button_x, y, half_width, button_height),
             'text': 'Count -',
             'action': 'count_down'
         })
         buttons.append({
-            'rect': pygame.Rect(button_x + half_width + 10, 650, half_width, button_height),
+            'rect': pygame.Rect(button_x + half_width + 10, y, half_width, button_height),
             'text': 'Count +',
             'action': 'count_up'
         })
+        y += button_spacing
         
-        return buttons
+        # Graph toggle button
+        if MATPLOTLIB_AVAILABLE:
+            buttons.append({
+                'rect': pygame.Rect(button_x, y, button_width, button_height),
+                'text': 'Graph: ON' if self.graphing_enabled else 'Graph: OFF',
+                'action': 'toggle_graph'
+            })
+            y += button_spacing
+            
+            buttons.append({
+                'rect': pygame.Rect(button_x, y, button_width, button_height),
+                'text': 'Open Graph' if not self.graph_window_open else 'Graph Open',
+                'action': 'show_graph'
+            })
+        
+        self.buttons = buttons
+    
+    def create_buttons(self):
+        """Legacy method - redirects to update_buttons"""
+        self.update_buttons()
+        return self.buttons
     
     def reset_game(self):
         self.entities = []
@@ -440,6 +521,11 @@ class Game:
         self.winner = None
         self.paused = False
         self.conversions = {ROCK: 0, PAPER: 0, SCISSORS: 0}
+        
+        # Reset population history
+        self.population_history = {ROCK: [], PAPER: [], SCISSORS: []}
+        self.time_history = []
+        self.frame_count = 0
         
         # Create initial entities
         for entity_type in [ROCK, PAPER, SCISSORS]:
@@ -466,6 +552,20 @@ class Game:
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 self.running = False
+            elif event.type == pygame.VIDEORESIZE:
+                # Handle window resize
+                self.screen_width = max(MIN_SCREEN_WIDTH, event.w)
+                self.screen_height = max(MIN_SCREEN_HEIGHT, event.h)
+                self.screen = pygame.display.set_mode(
+                    (self.screen_width, self.screen_height),
+                    pygame.RESIZABLE
+                )
+                self.update_layout()
+                self.update_buttons()
+                # Clamp entities to new game area
+                for entity in self.entities:
+                    entity.x = max(entity.size/2, min(self.game_area.width - entity.size/2, entity.x))
+                    entity.y = max(entity.size/2, min(self.game_area.height - entity.size/2, entity.y))
             elif event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_SPACE:
                     self.paused = not self.paused
@@ -498,10 +598,7 @@ class Game:
             self.speed_multiplier *= 2
             if self.speed_multiplier > 4:
                 self.speed_multiplier = 0.5
-            # Update button text
-            for button in self.buttons:
-                if button['action'] == 'speed':
-                    button['text'] = f'Speed: {self.speed_multiplier}x'
+            self.update_buttons()
         elif action == 'add_rock':
             self.spawn_entity(ROCK)
         elif action == 'add_paper':
@@ -510,10 +607,7 @@ class Game:
             self.spawn_entity(SCISSORS)
         elif action == 'toggle_evolution':
             self.evolution_enabled = not self.evolution_enabled
-            # Update button text
-            for button in self.buttons:
-                if button['action'] == 'toggle_evolution':
-                    button['text'] = 'Evolution: ON' if self.evolution_enabled else 'Evolution: OFF'
+            self.update_buttons()
             # Restart game with new setting
             self.reset_game()
         elif action == 'count_down':
@@ -522,6 +616,12 @@ class Game:
         elif action == 'count_up':
             self.initial_count = min(500, self.initial_count + 5)
             self.reset_game()
+        elif action == 'toggle_graph':
+            self.graphing_enabled = not self.graphing_enabled
+            self.update_buttons()
+        elif action == 'show_graph':
+            self.show_population_graph()
+            self.update_buttons()
     
     def update(self):
         if self.paused or self.game_over:
@@ -536,6 +636,18 @@ class Game:
             
             # Check collisions
             self.check_collisions()
+        
+        # Record population for graphing
+        self.frame_count += 1
+        if self.graphing_enabled and self.frame_count % self.record_interval == 0:
+            counts = self.count_entities()
+            self.time_history.append(self.frame_count / FPS)  # Time in seconds
+            for entity_type in [ROCK, PAPER, SCISSORS]:
+                self.population_history[entity_type].append(counts[entity_type])
+            
+            # Update real-time graph
+            if self.graph_window_open:
+                self.update_realtime_graph()
         
         # Check for winner
         counts = self.count_entities()
@@ -577,6 +689,108 @@ class Game:
                 entity.inherit_properties_from(winner)
             else:
                 entity._update_scaled_image()
+    
+    def open_realtime_graph(self):
+        """Open a real-time graph window"""
+        if not MATPLOTLIB_AVAILABLE:
+            print("matplotlib not available")
+            return
+        
+        if self.graph_window_open:
+            print("Graph window already open")
+            return
+        
+        self.graph_window_open = True
+        
+        # Enable graphing automatically
+        self.graphing_enabled = True
+        self.update_buttons()
+        
+        # Create figure and axis
+        plt.ion()  # Enable interactive mode
+        self.graph_fig, self.graph_ax = plt.subplots(figsize=(8, 5))
+        self.graph_fig.canvas.manager.set_window_title('Population Over Time')
+        
+        # Set up the plot
+        colors = {
+            ROCK: '#8B4513',      # Brown
+            PAPER: '#DAA520',     # Golden rod (more visible than beige)
+            SCISSORS: '#708090'   # Slate gray (more visible than silver)
+        }
+        
+        # Initialize empty lines
+        self.graph_lines = {}
+        for entity_type in [ROCK, PAPER, SCISSORS]:
+            line, = self.graph_ax.plot([], [], 
+                                       label=entity_type.capitalize(),
+                                       color=colors[entity_type],
+                                       linewidth=2)
+            self.graph_lines[entity_type] = line
+        
+        self.graph_ax.set_xlabel('Time (seconds)', fontsize=12)
+        self.graph_ax.set_ylabel('Population', fontsize=12)
+        self.graph_ax.set_title('Rock Paper Scissors - Real-time Population', fontsize=14)
+        self.graph_ax.legend(loc='upper right')
+        self.graph_ax.grid(True, alpha=0.3)
+        self.graph_ax.set_xlim(0, 10)
+        self.graph_ax.set_ylim(0, self.initial_count * 3 + 10)
+        
+        # Handle window close event
+        def on_close(event):
+            self.graph_window_open = False
+            self.graph_fig = None
+            self.graph_ax = None
+            self.graph_lines = {}
+        
+        self.graph_fig.canvas.mpl_connect('close_event', on_close)
+        
+        plt.tight_layout()
+        plt.show(block=False)
+    
+    def update_realtime_graph(self):
+        """Update the real-time graph with current data"""
+        if not self.graph_window_open or self.graph_fig is None:
+            return
+        
+        if not self.time_history:
+            return
+        
+        try:
+            # Update line data
+            for entity_type in [ROCK, PAPER, SCISSORS]:
+                if entity_type in self.graph_lines:
+                    self.graph_lines[entity_type].set_data(
+                        self.time_history, 
+                        self.population_history[entity_type]
+                    )
+            
+            # Adjust x-axis limits
+            max_time = max(self.time_history) if self.time_history else 10
+            self.graph_ax.set_xlim(0, max(10, max_time + 1))
+            
+            # Adjust y-axis limits
+            max_pop = max(
+                max(self.population_history[ROCK]) if self.population_history[ROCK] else 0,
+                max(self.population_history[PAPER]) if self.population_history[PAPER] else 0,
+                max(self.population_history[SCISSORS]) if self.population_history[SCISSORS] else 0
+            )
+            self.graph_ax.set_ylim(0, max(10, max_pop + 5))
+            
+            # Redraw
+            self.graph_fig.canvas.draw_idle()
+            self.graph_fig.canvas.flush_events()
+        except Exception as e:
+            # Graph window might have been closed
+            self.graph_window_open = False
+    
+    def show_population_graph(self):
+        """Open real-time graph window or show static graph"""
+        if not MATPLOTLIB_AVAILABLE:
+            print("matplotlib not available")
+            return
+        
+        # Open real-time graph
+        self.open_realtime_graph()
     
     def draw(self):
         # Clear screen
@@ -643,6 +857,10 @@ class Game:
         total_text = self.font.render(f"Total: {total}", True, WHITE)
         self.screen.blit(total_text, (panel_x, y + 10))
         
+        # Draw initial count display
+        count_text = self.small_font.render(f"Initial: {self.initial_count} per type", True, WHITE)
+        self.screen.blit(count_text, (panel_x, y + 45))
+        
         # Draw buttons
         for button in self.buttons:
             color = GRAY if button['rect'].collidepoint(pygame.mouse.get_pos()) else DARK_GRAY
@@ -653,24 +871,15 @@ class Game:
             text_rect = text.get_rect(center=button['rect'].center)
             self.screen.blit(text, text_rect)
         
-        # Draw initial count display
-        count_text = self.font.render(f"Initial: {self.initial_count}", True, WHITE)
-        self.screen.blit(count_text, (panel_x, 700))
-        
-        # Instructions
+        # Instructions at the bottom of the screen
         instructions = [
-            "Controls:",
-            "SPACE - Pause/Resume",
-            "R - Restart",
-            "Click - Add random entity",
-            "ESC - Quit"
+            "SPACE: Pause | R: Restart | Click: Add | ESC: Quit"
         ]
         
-        y = 740
+        y = self.screen_height - 30
         for line in instructions:
             text = self.small_font.render(line, True, WHITE)
             self.screen.blit(text, (panel_x, y))
-            y += 25
     
     def draw_game_over(self):
         # Semi-transparent overlay
