@@ -25,6 +25,8 @@ YELLOW = (255, 255, 100)
 ENTITY_SIZE = 40
 ENTITY_SPEED = 2
 INITIAL_COUNT = 15  # Initial count per type
+SAME_TYPE_REPEL_RADIUS = 50  # Radius for soft collision between same types
+SAME_TYPE_REPEL_STRENGTH = 0.5  # How strongly same types push each other away
 
 # Entity types
 ROCK = "rock"
@@ -90,6 +92,23 @@ class Entity:
         # Behavior: flee from threats, chase prey
         target_dx, target_dy = 0, 0
         
+        # Soft collision with same type - calculate repulsion force
+        repel_dx, repel_dy = 0, 0
+        for entity in entities:
+            if entity is self:
+                continue
+            if entity.entity_type == self.entity_type:
+                dist = self.distance_to(entity)
+                if dist < SAME_TYPE_REPEL_RADIUS and dist > 0:
+                    # Calculate repulsion force (stronger when closer)
+                    dx = self.x - entity.x
+                    dy = self.y - entity.y
+                    # Force increases as distance decreases
+                    force = (SAME_TYPE_REPEL_RADIUS - dist) / SAME_TYPE_REPEL_RADIUS
+                    force *= SAME_TYPE_REPEL_STRENGTH
+                    repel_dx += (dx / dist) * force
+                    repel_dy += (dy / dist) * force
+        
         # Priority: flee if threat is close
         if nearest_threat and nearest_threat_dist < 150:
             # Flee from threat
@@ -116,6 +135,10 @@ class Entity:
         # Smooth velocity change
         self.vx = self.vx * 0.9 + target_dx * 0.1
         self.vy = self.vy * 0.9 + target_dy * 0.1
+        
+        # Apply same-type repulsion force
+        self.vx += repel_dx
+        self.vy += repel_dy
         
         # Update position
         self.x += self.vx
