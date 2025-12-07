@@ -75,7 +75,7 @@ When two entities collide, the winner converts the loser to its own type. The ba
 
 ```
 Rock-Paper-Sissors-Battle-Royale/
-├── main.py              # Main game file (multithreaded)
+├── main.py              # Main game file (GPU/CPU accelerated)
 ├── images/              # Entity images
 │   ├── boulder-clipart-transparent-background-rock-1-3961670665.png
 │   ├── Paper-Sheet-PNG-Transparent-Background-3062699109.png
@@ -124,6 +124,7 @@ MAX_ATTACK_DISTANCE = 400     # Maximum attack detection distance
 
 ## 🎨 Features
 
+- **GPU Acceleration** - CUDA-powered entity updates via CuPy (with NumPy fallback)
 - **Resizable Window** - Drag to resize, UI adapts dynamically
 - **Interactive GUI** - Full control panel with buttons and stats
 - **Real-time Statistics** - Track entity counts and conversions
@@ -134,11 +135,43 @@ MAX_ATTACK_DISTANCE = 400     # Maximum attack detection distance
 - **Game Over Screen** - Celebratory winner announcement
 - **Evolutionary Properties** - Optional evolution system with inheritance and mutation
 - **Real-time Graphing** - Live matplotlib population graph in separate window
-- **Multithreaded Updates** - Parallel entity processing for large simulations
+- **Multithreaded CPU Fallback** - Parallel entity processing when GPU unavailable
+
+## 🚀 GPU Acceleration
+
+The simulation uses **CUDA GPU acceleration** via CuPy for massively parallel entity updates:
+
+### How it Works
+- All entity positions, velocities, and behaviors are computed in parallel on the GPU
+- Distance calculations, threat/prey detection, and repulsion forces use matrix operations
+- Thousands of entities can be simulated smoothly at 60 FPS
+
+### Performance Tiers
+| Entity Count | Processing Method |
+|--------------|-------------------|
+| 1-20 | Sequential CPU |
+| 21-50 | GPU (if available) or Sequential CPU |
+| 50+ | GPU (if available) or Multithreaded CPU |
+
+### Installing CuPy (Optional)
+For GPU acceleration, install CuPy matching your CUDA version:
+
+```bash
+# For CUDA 11.x
+pip install cupy-cuda11x
+
+# For CUDA 12.x
+pip install cupy-cuda12x
+
+# Or auto-detect CUDA version
+pip install cupy
+```
+
+If CuPy is not installed, the simulation automatically falls back to NumPy (CPU).
 
 ## 🧵 Multithreading
 
-The simulation uses multithreading for improved performance:
+When GPU is unavailable, the simulation uses multithreading for improved performance:
 
 - **Entity Updates**: When entity count exceeds 50, updates are parallelized across multiple worker threads using Python's `ThreadPoolExecutor`
 - **Graph Updates**: Real-time graph rendering runs in a separate thread to avoid blocking the main game loop

@@ -5,6 +5,34 @@ import os
 import threading
 from concurrent.futures import ThreadPoolExecutor
 import queue
+import numpy as np
+import warnings
+
+# Suppress CuPy warnings about multiple installations
+warnings.filterwarnings('ignore', message='.*CuPy.*multiple.*packages.*')
+warnings.filterwarnings('ignore', category=UserWarning, module='cupy')
+
+# Try to import CuPy for GPU acceleration
+GPU_AVAILABLE = False
+cp = np  # Default to NumPy
+try:
+    import cupy as _cp
+    # Test if CuPy actually works by doing a real GPU operation
+    # This will fail if CUDA libraries are missing
+    _test = _cp.array([1.0, 2.0, 3.0], dtype=_cp.float32)
+    _test2 = _cp.array([4.0, 5.0, 6.0], dtype=_cp.float32)
+    _test_result = _test + _test2  # Force kernel compilation
+    _test_result_cpu = _cp.asnumpy(_test_result)  # Transfer back
+    del _test, _test2, _test_result, _test_result_cpu
+    cp = _cp
+    GPU_AVAILABLE = True
+    print("GPU acceleration enabled (CuPy + CUDA)")
+except ImportError:
+    print("CuPy not available - using CPU (NumPy)")
+except Exception as e:
+    # CuPy imported but CUDA libraries not working
+    print(f"CuPy/CUDA test failed: {type(e).__name__}")
+    print("Falling back to CPU (NumPy)")
 
 # Try to import matplotlib for optional graphing
 try:
@@ -390,9 +418,12 @@ class Game:
         self.graph_ax = None
         self.graph_lines = {}
         
-        # Thread pool for parallel entity updates
+        # Thread pool for parallel entity updates (fallback)
         self.thread_pool = ThreadPoolExecutor(max_workers=NUM_THREADS)
         self.entity_lock = threading.Lock()
+        
+        # GPU acceleration flag
+        self.use_gpu = GPU_AVAILABLE
         
         # Buttons (will be created dynamically)
         self.buttons = []
@@ -637,6 +668,158 @@ class Game:
         for entity in entities_batch:
             entity.update(all_entities, width, height)
     
+    def gpu_update_entities(self):
+        """GPU-accelerated entity position and velocity updates"""
+        if len(self.entities) == 0:
+            return
+        
+        n = len(self.entities)
+        xp = cp if self.use_gpu else np
+        
+        # Extract entity data to arrays
+        positions = xp.array([[e.x, e.y] for e in self.entities], dtype=xp.float32)
+        velocities = xp.array([[e.vx, e.vy] for e in self.entities], dtype=xp.float32)
+        speeds = xp.array([e.speed for e in self.entities], dtype=xp.float32)
+        flee_distances = xp.array([e.flee_distance for e in self.entities], dtype=xp.float32)
+        attack_distances = xp.array([e.attack_distance for e in self.entities], dtype=xp.float32)
+        sizes = xp.array([e.size for e in self.entities], dtype=xp.float32)
+        
+        # Map entity types to integers: rock=0, paper=1, scissors=2
+        type_map = {ROCK: 0, PAPER: 1, SCISSORS: 2}
+        types = xp.array([type_map[e.entity_type] for e in self.entities], dtype=xp.int32)
+        
+        # Threat/prey relationships: rock(0)->scissors(2), paper(1)->rock(0), scissors(2)->paper(1)
+        # prey[i] = what type i beats
+        prey_types = xp.array([2, 0, 1], dtype=xp.int32)  # rock beats scissors, etc.
+        threat_types = xp.array([1, 2, 0], dtype=xp.int32)  # paper beats rock, etc.
+        
+        # Compute pairwise distance matrix (n x n)
+        # diff[i,j] = positions[j] - positions[i]
+        diff = positions[xp.newaxis, :, :] - positions[:, xp.newaxis, :]  # (n, n, 2)
+        dist_sq = xp.sum(diff ** 2, axis=2)  # (n, n)
+        dist = xp.sqrt(dist_sq + 1e-10)  # Avoid division by zero
+        
+        # Direction vectors (normalized)
+        direction = diff / dist[:, :, xp.newaxis]  # (n, n, 2)
+        
+        # Find nearest threat and prey for each entity
+        entity_prey = prey_types[types]  # What each entity hunts
+        entity_threat = threat_types[types]  # What threatens each entity
+        
+        # Create masks for prey and threat relationships
+        is_prey = (types[xp.newaxis, :] == entity_prey[:, xp.newaxis])  # (n, n)
+        is_threat = (types[xp.newaxis, :] == entity_threat[:, xp.newaxis])  # (n, n)
+        is_same_type = (types[xp.newaxis, :] == types[:, xp.newaxis])  # (n, n)
+        
+        # Mask self-distances
+        eye_mask = xp.eye(n, dtype=bool)
+        dist_masked = xp.where(eye_mask, xp.inf, dist)
+        
+        # Find nearest threat
+        threat_dist = xp.where(is_threat, dist_masked, xp.inf)
+        nearest_threat_idx = xp.argmin(threat_dist, axis=1)
+        nearest_threat_dist = threat_dist[xp.arange(n), nearest_threat_idx]
+        
+        # Find nearest prey
+        prey_dist = xp.where(is_prey, dist_masked, xp.inf)
+        nearest_prey_idx = xp.argmin(prey_dist, axis=1)
+        nearest_prey_dist = prey_dist[xp.arange(n), nearest_prey_idx]
+        
+        # Calculate target velocities based on behavior
+        target_vel = xp.zeros_like(velocities)
+        
+        # Flee behavior (when threat is within flee_distance)
+        fleeing = nearest_threat_dist < flee_distances
+        flee_dir = -direction[xp.arange(n), nearest_threat_idx]  # Away from threat
+        target_vel = xp.where(
+            fleeing[:, xp.newaxis],
+            flee_dir * (speeds * 1.5)[:, xp.newaxis],
+            target_vel
+        )
+        
+        # Chase behavior (when not fleeing and prey is within attack_distance)
+        chasing = (~fleeing) & (nearest_prey_dist < attack_distances)
+        chase_dir = direction[xp.arange(n), nearest_prey_idx]  # Toward prey
+        target_vel = xp.where(
+            chasing[:, xp.newaxis],
+            chase_dir * speeds[:, xp.newaxis],
+            target_vel
+        )
+        
+        # Wandering (when neither fleeing nor chasing) - keep current velocity with random changes
+        wandering = (~fleeing) & (~chasing)
+        # Random direction change for wandering entities (2% chance per frame)
+        random_change = xp.array(np.random.random(n) < 0.02, dtype=bool)
+        random_vel = xp.array(
+            np.column_stack([
+                np.random.uniform(-1, 1, n) * speeds.get() if self.use_gpu else speeds,
+                np.random.uniform(-1, 1, n) * speeds.get() if self.use_gpu else speeds
+            ]), dtype=xp.float32
+        ) if self.use_gpu else np.column_stack([
+            np.random.uniform(-1, 1, n) * speeds,
+            np.random.uniform(-1, 1, n) * speeds
+        ]).astype(np.float32)
+        
+        wander_vel = xp.where(
+            (wandering & random_change)[:, xp.newaxis],
+            random_vel,
+            velocities
+        )
+        target_vel = xp.where(
+            wandering[:, xp.newaxis],
+            wander_vel,
+            target_vel
+        )
+        
+        # Same-type repulsion
+        repel_mask = is_same_type & (~eye_mask) & (dist < SAME_TYPE_REPEL_RADIUS)
+        repel_force = xp.where(dist > 0, (SAME_TYPE_REPEL_RADIUS - dist) / SAME_TYPE_REPEL_RADIUS, 0)
+        repel_force = repel_force * SAME_TYPE_REPEL_STRENGTH
+        repel_dir = -direction  # Away from same-type entity
+        repel_contrib = xp.where(
+            repel_mask[:, :, xp.newaxis],
+            repel_dir * repel_force[:, :, xp.newaxis],
+            0
+        )
+        repel_vel = xp.sum(repel_contrib, axis=1)  # Sum all repulsion forces
+        
+        # Smooth velocity update
+        new_velocities = velocities * 0.9 + target_vel * 0.1 + repel_vel
+        
+        # Update positions
+        new_positions = positions + new_velocities
+        
+        # Bounce off walls
+        width = self.game_area.width
+        height = self.game_area.height
+        margins = sizes / 2
+        
+        # X bounds
+        hit_left = new_positions[:, 0] < margins
+        hit_right = new_positions[:, 0] > width - margins
+        new_positions[:, 0] = xp.where(hit_left, margins, new_positions[:, 0])
+        new_positions[:, 0] = xp.where(hit_right, width - margins, new_positions[:, 0])
+        new_velocities[:, 0] = xp.where(hit_left | hit_right, -new_velocities[:, 0], new_velocities[:, 0])
+        
+        # Y bounds
+        hit_top = new_positions[:, 1] < margins
+        hit_bottom = new_positions[:, 1] > height - margins
+        new_positions[:, 1] = xp.where(hit_top, margins, new_positions[:, 1])
+        new_positions[:, 1] = xp.where(hit_bottom, height - margins, new_positions[:, 1])
+        new_velocities[:, 1] = xp.where(hit_top | hit_bottom, -new_velocities[:, 1], new_velocities[:, 1])
+        
+        # Transfer back to CPU if using GPU
+        if self.use_gpu:
+            new_positions = cp.asnumpy(new_positions)
+            new_velocities = cp.asnumpy(new_velocities)
+        
+        # Update entity objects
+        for i, entity in enumerate(self.entities):
+            entity.x = float(new_positions[i, 0])
+            entity.y = float(new_positions[i, 1])
+            entity.vx = float(new_velocities[i, 0])
+            entity.vy = float(new_velocities[i, 1])
+    
     def update(self):
         if self.paused or self.game_over:
             return
@@ -644,9 +827,19 @@ class Game:
         # Update entities multiple times based on speed
         updates = max(1, int(self.speed_multiplier))
         for _ in range(updates):
-            # Parallel entity updates using thread pool
-            if len(self.entities) > 50:  # Only use threading for large entity counts
-                # Split entities into batches for parallel processing
+            # Use GPU acceleration if available and enough entities
+            if self.use_gpu and len(self.entities) > 20:
+                try:
+                    self.gpu_update_entities()
+                except Exception as e:
+                    # GPU failed at runtime, disable and fall back to CPU
+                    print(f"GPU update failed: {type(e).__name__}, switching to CPU")
+                    self.use_gpu = False
+                    # Do CPU update for this frame
+                    for entity in self.entities:
+                        entity.update(self.entities, self.game_area.width, self.game_area.height)
+            elif len(self.entities) > 50:
+                # CPU parallel entity updates using thread pool
                 batch_size = max(1, len(self.entities) // NUM_THREADS)
                 batches = [
                     self.entities[i:i + batch_size] 
