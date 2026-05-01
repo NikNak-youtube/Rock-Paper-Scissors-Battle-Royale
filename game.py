@@ -19,7 +19,7 @@ from config import (
     EDGE_WRAP, RECORDING_ENABLED, RECORDING_FOLDER,
     MAX_SIZE, MAX_FLEE_DISTANCE, MAX_ATTACK_DISTANCE,
     SAME_TYPE_REPEL_RADIUS, SAME_TYPE_REPEL_STRENGTH,
-    SPATIAL_GRID_CELL_SIZE,
+    SPATIAL_GRID_CELL_SIZE, SHARED_CALC_ENABLED, SHARED_CALC_RADIUS,
     ROCK, PAPER, SCISSORS, BEATS, TYPE_COLORS
 )
 from entity import Entity
@@ -149,6 +149,14 @@ class Game:
             MAX_FLEE_DISTANCE, MAX_ATTACK_DISTANCE, SAME_TYPE_REPEL_RADIUS
         )
 
+        # Shared distance calculation (cluster scan reuse). Toggleable in UI.
+        self.shared_calc_enabled = SHARED_CALC_ENABLED
+        self._share_radius_sq = SHARED_CALC_RADIUS * SHARED_CALC_RADIUS
+
+        # Monotonic counter that bumps every entity-update sub-iteration so
+        # the per-tick neighbor cache invalidates between sub-iterations.
+        self._update_tick = 0
+
         # GPU acceleration flag
         self.use_gpu = GPU_AVAILABLE
         
@@ -191,8 +199,8 @@ class Game:
         buttons = []
         button_x = self.screen_width - UI_PANEL_WIDTH + 10
         button_width = UI_PANEL_WIDTH - 20
-        button_height = 35
-        button_spacing = 40
+        button_height = 32
+        button_spacing = 36
         
         # Start buttons after the stats section (around y=250)
         start_y = 250
@@ -284,7 +292,15 @@ class Game:
             'action': 'toggle_wrap'
         })
         y += button_spacing
-        
+
+        # Shared distance calculation toggle
+        buttons.append({
+            'rect': pygame.Rect(button_x, y, button_width, button_height),
+            'text': 'Share Calc: ON' if self.shared_calc_enabled else 'Share Calc: OFF',
+            'action': 'toggle_shared_calc'
+        })
+        y += button_spacing
+
         # Recording toggle
         buttons.append({
             'rect': pygame.Rect(button_x, y, button_width, button_height),
@@ -413,6 +429,9 @@ class Game:
         elif action == 'toggle_wrap':
             self.edge_wrap = not self.edge_wrap
             self.update_buttons()
+        elif action == 'toggle_shared_calc':
+            self.shared_calc_enabled = not self.shared_calc_enabled
+            self.update_buttons()
         elif action == 'toggle_recording':
             self.recording_enabled = not self.recording_enabled
             if self.recording_enabled:
@@ -446,7 +465,8 @@ class Game:
             pygame.image.save(self.screen, filename)
             self.recording_frame += 1
     
-    def update_entity_batch(self, entities_batch, grid, query_radius, width, height, edge_wrap):
+    def update_entity_batch(self, entities_batch, grid, query_radius, width, height,
+                            edge_wrap, tick, share_radius_sq):
         """Update a batch of entities (called in thread).
 
         Each entity queries the shared spatial grid for its own neighbor list.
@@ -454,7 +474,8 @@ class Game:
         """
         for entity in entities_batch:
             neighbors = grid.query_radius(entity.x, entity.y, query_radius)
-            entity.update(neighbors, width, height, edge_wrap)
+            entity.update(neighbors, width, height, edge_wrap,
+                          tick=tick, share_radius_sq=share_radius_sq)
     
     def gpu_update_entities(self):
         """GPU-accelerated entity position and velocity updates"""
@@ -637,11 +658,18 @@ class Game:
         height = self.game_area.height
         grid = self.spatial_grid
         query_radius = self._neighbor_query_radius
+        share_radius_sq = self._share_radius_sq if self.shared_calc_enabled else 0.0
 
         for _ in range(updates):
+            # Bump tick so cached neighbor scans from prior sub-iterations
+            # (or earlier frames) are recognized as stale.
+            self._update_tick += 1
+            tick = self._update_tick
+
             # Use GPU acceleration if available and enough entities.
-            # GPU path is fully vectorized O(n²); spatial grid would not help
-            # there, but still pays off for collision detection below.
+            # GPU path is fully vectorized O(n²); spatial grid + cluster
+            # sharing don't apply there, but still pay off for collision
+            # detection below.
             if self.use_gpu and len(self.entities) > 20:
                 try:
                     self.gpu_update_entities()
@@ -652,7 +680,8 @@ class Game:
                     grid.build(self.entities)
                     for entity in self.entities:
                         neighbors = grid.query_radius(entity.x, entity.y, query_radius)
-                        entity.update(neighbors, width, height, self.edge_wrap)
+                        entity.update(neighbors, width, height, self.edge_wrap,
+                                      tick=tick, share_radius_sq=share_radius_sq)
             elif len(self.entities) > 50:
                 # CPU parallel updates: build grid once, threads query it.
                 grid.build(self.entities)
@@ -665,7 +694,8 @@ class Game:
                 futures = [
                     self.thread_pool.submit(
                         self.update_entity_batch,
-                        batch, grid, query_radius, width, height, self.edge_wrap
+                        batch, grid, query_radius, width, height,
+                        self.edge_wrap, tick, share_radius_sq
                     )
                     for batch in batches
                 ]
@@ -678,7 +708,8 @@ class Game:
                 grid.build(self.entities)
                 for entity in self.entities:
                     neighbors = grid.query_radius(entity.x, entity.y, query_radius)
-                    entity.update(neighbors, width, height, self.edge_wrap)
+                    entity.update(neighbors, width, height, self.edge_wrap,
+                                  tick=tick, share_radius_sq=share_radius_sq)
 
             # Rebuild grid against post-update positions so collision queries
             # see entities in their current cells.

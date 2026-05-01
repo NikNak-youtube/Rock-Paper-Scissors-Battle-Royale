@@ -38,6 +38,11 @@ class Entity:
         self.image = image
         self.target = None
         self.flee_from = None
+
+        # Shared neighbor-scan cache. Tick is the update-tick at which
+        # _cache_data was populated; mismatched tick means stale and ignored.
+        self._cache_tick = -1
+        self._cache_data = None
         
         # Evolutionary properties (stored as normalized 0-1 values internally)
         if evolution_enabled and parent:
@@ -166,13 +171,20 @@ class Entity:
         else:
             self.scaled_image = None
 
-    def update(self, neighbors, screen_width, screen_height, edge_wrap=False):
+    def update(self, neighbors, screen_width, screen_height, edge_wrap=False,
+               tick=0, share_radius_sq=0.0):
         """Update entity position and behavior.
 
         `neighbors` is the candidate list from the spatial grid (already
         narrowed to entities near this one). It may include `self`.
+
+        If `share_radius_sq > 0`, this entity will try to reuse a cached
+        neighbor scan from a same-type entity within sqrt(share_radius_sq)
+        that already ran at the current `tick`. The cache stores the leader's
+        threat/prey displacement vectors and squared distances; followers
+        move as if they were at the leader's position relative to those
+        targets. Repulsion is always computed locally.
         """
-        # Cache hot attributes locally to skip repeated attribute lookups.
         sx = self.x
         sy = self.y
         my_type = self.entity_type
@@ -184,44 +196,84 @@ class Entity:
         prey_type = BEATS[my_type]
         threat_type = BEATEN_BY[my_type]
 
-        nearest_threat_dx = 0.0
-        nearest_threat_dy = 0.0
-        nearest_threat_dist_sq = float('inf')
-        nearest_prey_dx = 0.0
-        nearest_prey_dy = 0.0
-        nearest_prey_dist_sq = float('inf')
+        # Try to inherit a same-type neighbor's scan result from this tick.
+        cache = None
+        if share_radius_sq > 0.0:
+            for e in neighbors:
+                if e is self or e.entity_type != my_type:
+                    continue
+                if e._cache_tick != tick:
+                    continue
+                dx = e.x - sx
+                dy = e.y - sy
+                if dx * dx + dy * dy <= share_radius_sq:
+                    cache = e._cache_data
+                    break
 
         repel_dx = 0.0
         repel_dy = 0.0
 
-        # Single pass: find nearest threat, nearest prey, accumulate same-type
-        # repulsion. Squared distances used for comparison to avoid sqrt.
-        for entity in neighbors:
-            if entity is self:
-                continue
-            dx = entity.x - sx
-            dy = entity.y - sy
-            dist_sq = dx * dx + dy * dy
-            etype = entity.entity_type
+        if cache is not None:
+            # Follower path: reuse leader's threat/prey scan, only compute
+            # local same-type repulsion (short-range, cheap).
+            (nearest_threat_dx, nearest_threat_dy, nearest_threat_dist_sq,
+             nearest_prey_dx, nearest_prey_dy, nearest_prey_dist_sq) = cache
+            for entity in neighbors:
+                if entity is self or entity.entity_type != my_type:
+                    continue
+                dx = entity.x - sx
+                dy = entity.y - sy
+                dist_sq = dx * dx + dy * dy
+                if 0 < dist_sq < _REPEL_RADIUS_SQ:
+                    dist = math.sqrt(dist_sq)
+                    force = ((SAME_TYPE_REPEL_RADIUS - dist) / SAME_TYPE_REPEL_RADIUS
+                             * SAME_TYPE_REPEL_STRENGTH)
+                    inv_dist = 1.0 / dist
+                    repel_dx -= dx * inv_dist * force
+                    repel_dy -= dy * inv_dist * force
+        else:
+            # Leader path: full scan in one pass, publish cache for followers.
+            nearest_threat_dx = 0.0
+            nearest_threat_dy = 0.0
+            nearest_threat_dist_sq = float('inf')
+            nearest_prey_dx = 0.0
+            nearest_prey_dy = 0.0
+            nearest_prey_dist_sq = float('inf')
 
-            if etype == threat_type:
-                if dist_sq < nearest_threat_dist_sq:
-                    nearest_threat_dist_sq = dist_sq
-                    nearest_threat_dx = dx
-                    nearest_threat_dy = dy
-            elif etype == prey_type:
-                if dist_sq < nearest_prey_dist_sq:
-                    nearest_prey_dist_sq = dist_sq
-                    nearest_prey_dx = dx
-                    nearest_prey_dy = dy
-            elif dist_sq < _REPEL_RADIUS_SQ and dist_sq > 0:
-                dist = math.sqrt(dist_sq)
-                force = ((SAME_TYPE_REPEL_RADIUS - dist) / SAME_TYPE_REPEL_RADIUS
-                         * SAME_TYPE_REPEL_STRENGTH)
-                inv_dist = 1.0 / dist
-                # Push away from neighbor
-                repel_dx -= dx * inv_dist * force
-                repel_dy -= dy * inv_dist * force
+            for entity in neighbors:
+                if entity is self:
+                    continue
+                dx = entity.x - sx
+                dy = entity.y - sy
+                dist_sq = dx * dx + dy * dy
+                etype = entity.entity_type
+
+                if etype == threat_type:
+                    if dist_sq < nearest_threat_dist_sq:
+                        nearest_threat_dist_sq = dist_sq
+                        nearest_threat_dx = dx
+                        nearest_threat_dy = dy
+                elif etype == prey_type:
+                    if dist_sq < nearest_prey_dist_sq:
+                        nearest_prey_dist_sq = dist_sq
+                        nearest_prey_dx = dx
+                        nearest_prey_dy = dy
+                elif dist_sq < _REPEL_RADIUS_SQ and dist_sq > 0:
+                    dist = math.sqrt(dist_sq)
+                    force = ((SAME_TYPE_REPEL_RADIUS - dist) / SAME_TYPE_REPEL_RADIUS
+                             * SAME_TYPE_REPEL_STRENGTH)
+                    inv_dist = 1.0 / dist
+                    repel_dx -= dx * inv_dist * force
+                    repel_dy -= dy * inv_dist * force
+
+        # Publish (or re-publish) cache so subsequent same-type neighbors can
+        # chain off this entity. Same tuple is reused across followers.
+        if share_radius_sq > 0.0:
+            if cache is None:
+                cache = (nearest_threat_dx, nearest_threat_dy, nearest_threat_dist_sq,
+                         nearest_prey_dx, nearest_prey_dy, nearest_prey_dist_sq)
+            self._cache_tick = tick
+            self._cache_data = cache
 
         # Behavior: flee if threat in range, else chase prey, else wander.
         if nearest_threat_dist_sq < flee_dist_sq:

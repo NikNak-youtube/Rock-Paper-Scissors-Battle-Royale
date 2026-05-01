@@ -109,6 +109,13 @@ BEATEN_BY = {v: k for k, v in BEATS.items()}
 # larger cells = fewer cells to scan but more entities per cell.
 SPATIAL_GRID_CELL_SIZE = 100
 
+# Shared distance calculation: same-type entities within SHARED_CALC_RADIUS
+# reuse one entity's nearest-threat/prey scan instead of recomputing. This is
+# an approximation — followers move as if they were at the leader's position
+# w.r.t. distant threats, but local repulsion is still computed individually.
+SHARED_CALC_ENABLED = True
+SHARED_CALC_RADIUS = 80
+
 # Colors for each type (fallback if images don't load)
 TYPE_COLORS = {
     ROCK: (139, 69, 19),     # Brown
