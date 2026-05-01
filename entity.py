@@ -1,0 +1,307 @@
+"""
+Entity class for Rock Paper Scissors Battle Royale
+"""
+
+import pygame
+import random
+import math
+
+from config import (
+    BEATS, BEATEN_BY, TYPE_COLORS, MUTATION_RATE, PROPERTY_BUDGET,
+    MIN_SIZE, MAX_SIZE, MIN_SPEED, MAX_SPEED,
+    MIN_FLEE_DISTANCE, MAX_FLEE_DISTANCE,
+    MIN_ATTACK_DISTANCE, MAX_ATTACK_DISTANCE,
+    SAME_TYPE_REPEL_RADIUS, SAME_TYPE_REPEL_STRENGTH,
+    BLACK
+)
+
+# Precompute squared repulsion radius
+_REPEL_RADIUS_SQ = SAME_TYPE_REPEL_RADIUS * SAME_TYPE_REPEL_RADIUS
+
+
+class Entity:
+    """Represents a rock, paper, or scissors entity in the simulation."""
+
+    # Property count for balanced distribution
+    NUM_PROPERTIES = 4
+
+    # Shared cache for scaled images keyed by (id(base_image), int_size).
+    # pygame.transform.scale is expensive; entities sharing the same source
+    # image and size pixel-bucket reuse the same surface.
+    _scaled_image_cache = {}
+    
+    def __init__(self, x, y, entity_type, image=None, parent=None, evolution_enabled=True):
+        self.x = x
+        self.y = y
+        self.entity_type = entity_type
+        self.base_image = image  # Store original image
+        self.image = image
+        self.target = None
+        self.flee_from = None
+        
+        # Evolutionary properties (stored as normalized 0-1 values internally)
+        if evolution_enabled and parent:
+            # Inherit from parent with balanced mutation
+            self._inherit_balanced(parent)
+        elif evolution_enabled:
+            # Random initial properties that sum to PROPERTY_BUDGET
+            self._init_random_balanced()
+        else:
+            # Default properties (no evolution) - all at midpoint
+            self._size_norm = 0.5
+            self._speed_norm = 0.5
+            self._flee_norm = 0.5
+            self._attack_norm = 0.5
+        
+        self.vx = random.uniform(-self.speed, self.speed)
+        self.vy = random.uniform(-self.speed, self.speed)
+        
+        # Update image size if evolution enabled
+        self._update_scaled_image()
+    
+    def _init_random_balanced(self):
+        """Initialize with random values that sum to PROPERTY_BUDGET"""
+        # Generate 4 random values
+        values = [random.random() for _ in range(self.NUM_PROPERTIES)]
+        # Normalize to sum to PROPERTY_BUDGET
+        total = sum(values)
+        scale = PROPERTY_BUDGET / total
+        values = [v * scale for v in values]
+        # Clamp each to 0-1 range and redistribute excess
+        values = self._clamp_and_redistribute(values)
+        
+        self._size_norm, self._speed_norm, self._flee_norm, self._attack_norm = values
+    
+    def _inherit_balanced(self, parent):
+        """Inherit properties with balanced mutation - if one goes up, others go down"""
+        # Get parent's normalized values
+        values = [
+            parent._size_norm,
+            parent._speed_norm,
+            parent._flee_norm,
+            parent._attack_norm
+        ]
+        
+        # Pick a random property to mutate
+        mutate_idx = random.randint(0, self.NUM_PROPERTIES - 1)
+        mutation = random.uniform(-MUTATION_RATE, MUTATION_RATE)
+        
+        # Apply mutation to selected property
+        values[mutate_idx] += mutation
+        
+        # Distribute the opposite change to other properties
+        compensation = -mutation / (self.NUM_PROPERTIES - 1)
+        for i in range(self.NUM_PROPERTIES):
+            if i != mutate_idx:
+                values[i] += compensation
+        
+        # Clamp and redistribute to ensure valid range
+        values = self._clamp_and_redistribute(values)
+        
+        self._size_norm, self._speed_norm, self._flee_norm, self._attack_norm = values
+    
+    def _clamp_and_redistribute(self, values):
+        """Clamp values to 0-1 and redistribute excess to maintain sum"""
+        # Clamp and track excess
+        for _ in range(10):  # Iterate to handle cascading clamps
+            excess = 0
+            clamped_count = 0
+            
+            for i in range(len(values)):
+                if values[i] < 0:
+                    excess += values[i]
+                    values[i] = 0
+                    clamped_count += 1
+                elif values[i] > 1:
+                    excess += values[i] - 1
+                    values[i] = 1
+                    clamped_count += 1
+            
+            if abs(excess) < 0.001 or clamped_count == len(values):
+                break
+            
+            # Redistribute excess to non-clamped values
+            unclamped = [i for i in range(len(values)) if 0 < values[i] < 1]
+            if unclamped:
+                share = excess / len(unclamped)
+                for i in unclamped:
+                    values[i] += share
+        
+        return values
+    
+    # Property getters that convert normalized values to actual ranges
+    @property
+    def size(self):
+        return MIN_SIZE + self._size_norm * (MAX_SIZE - MIN_SIZE)
+    
+    @property
+    def speed(self):
+        return MIN_SPEED + self._speed_norm * (MAX_SPEED - MIN_SPEED)
+    
+    @property
+    def flee_distance(self):
+        return MIN_FLEE_DISTANCE + self._flee_norm * (MAX_FLEE_DISTANCE - MIN_FLEE_DISTANCE)
+    
+    @property
+    def attack_distance(self):
+        return MIN_ATTACK_DISTANCE + self._attack_norm * (MAX_ATTACK_DISTANCE - MIN_ATTACK_DISTANCE)
+    
+    def _mutate(self, value, min_val, max_val):
+        """Mutate a value with some randomness (legacy, kept for compatibility)"""
+        mutation = random.uniform(-MUTATION_RATE, MUTATION_RATE) * (max_val - min_val)
+        new_value = value + mutation
+        return max(min_val, min(max_val, new_value))
+    
+    def _update_scaled_image(self):
+        """Scale the image based on entity size, sharing surfaces via cache."""
+        if self.base_image:
+            size = int(self.size)
+            key = (id(self.base_image), size)
+            cache = Entity._scaled_image_cache
+            cached = cache.get(key)
+            if cached is None:
+                cached = pygame.transform.scale(self.base_image, (size, size))
+                cache[key] = cached
+            self.scaled_image = cached
+        else:
+            self.scaled_image = None
+
+    def update(self, neighbors, screen_width, screen_height, edge_wrap=False):
+        """Update entity position and behavior.
+
+        `neighbors` is the candidate list from the spatial grid (already
+        narrowed to entities near this one). It may include `self`.
+        """
+        # Cache hot attributes locally to skip repeated attribute lookups.
+        sx = self.x
+        sy = self.y
+        my_type = self.entity_type
+        speed = self.speed
+        flee_dist = self.flee_distance
+        attack_dist = self.attack_distance
+        flee_dist_sq = flee_dist * flee_dist
+        attack_dist_sq = attack_dist * attack_dist
+        prey_type = BEATS[my_type]
+        threat_type = BEATEN_BY[my_type]
+
+        nearest_threat_dx = 0.0
+        nearest_threat_dy = 0.0
+        nearest_threat_dist_sq = float('inf')
+        nearest_prey_dx = 0.0
+        nearest_prey_dy = 0.0
+        nearest_prey_dist_sq = float('inf')
+
+        repel_dx = 0.0
+        repel_dy = 0.0
+
+        # Single pass: find nearest threat, nearest prey, accumulate same-type
+        # repulsion. Squared distances used for comparison to avoid sqrt.
+        for entity in neighbors:
+            if entity is self:
+                continue
+            dx = entity.x - sx
+            dy = entity.y - sy
+            dist_sq = dx * dx + dy * dy
+            etype = entity.entity_type
+
+            if etype == threat_type:
+                if dist_sq < nearest_threat_dist_sq:
+                    nearest_threat_dist_sq = dist_sq
+                    nearest_threat_dx = dx
+                    nearest_threat_dy = dy
+            elif etype == prey_type:
+                if dist_sq < nearest_prey_dist_sq:
+                    nearest_prey_dist_sq = dist_sq
+                    nearest_prey_dx = dx
+                    nearest_prey_dy = dy
+            elif dist_sq < _REPEL_RADIUS_SQ and dist_sq > 0:
+                dist = math.sqrt(dist_sq)
+                force = ((SAME_TYPE_REPEL_RADIUS - dist) / SAME_TYPE_REPEL_RADIUS
+                         * SAME_TYPE_REPEL_STRENGTH)
+                inv_dist = 1.0 / dist
+                # Push away from neighbor
+                repel_dx -= dx * inv_dist * force
+                repel_dy -= dy * inv_dist * force
+
+        # Behavior: flee if threat in range, else chase prey, else wander.
+        if nearest_threat_dist_sq < flee_dist_sq:
+            dist = math.sqrt(nearest_threat_dist_sq)
+            if dist < 0.1:
+                dist = 0.1
+            inv = (speed * 1.5) / dist
+            target_dx = -nearest_threat_dx * inv
+            target_dy = -nearest_threat_dy * inv
+        elif nearest_prey_dist_sq < attack_dist_sq:
+            dist = math.sqrt(nearest_prey_dist_sq)
+            if dist < 0.1:
+                dist = 0.1
+            inv = speed / dist
+            target_dx = nearest_prey_dx * inv
+            target_dy = nearest_prey_dy * inv
+        else:
+            if random.random() < 0.02:
+                self.vx = random.uniform(-speed, speed)
+                self.vy = random.uniform(-speed, speed)
+            target_dx = self.vx
+            target_dy = self.vy
+
+        self.vx = self.vx * 0.9 + target_dx * 0.1 + repel_dx
+        self.vy = self.vy * 0.9 + target_dy * 0.1 + repel_dy
+
+        self.x = sx + self.vx
+        self.y = sy + self.vy
+        
+        # Handle edges (wrap or bounce)
+        margin = int(self.size) // 2
+        if edge_wrap:
+            # Wrap around edges
+            if self.x < -margin:
+                self.x = screen_width + margin
+            elif self.x > screen_width + margin:
+                self.x = -margin
+            if self.y < -margin:
+                self.y = screen_height + margin
+            elif self.y > screen_height + margin:
+                self.y = -margin
+        else:
+            # Bounce off walls (using individual size)
+            if self.x < margin:
+                self.x = margin
+                self.vx *= -1
+            if self.x > screen_width - margin:
+                self.x = screen_width - margin
+                self.vx *= -1
+            if self.y < margin:
+                self.y = margin
+                self.vy *= -1
+            if self.y > screen_height - margin:
+                self.y = screen_height - margin
+                self.vy *= -1
+    
+    def distance_to(self, other):
+        """Calculate distance to another entity."""
+        return math.sqrt((self.x - other.x)**2 + (self.y - other.y)**2)
+    
+    def collides_with(self, other):
+        """Check if this entity collides with another."""
+        # Use average of both entity sizes for collision
+        collision_dist = (self.size + other.size) / 2
+        return self.distance_to(other) < collision_dist
+    
+    def draw(self, screen):
+        """Draw the entity on the screen."""
+        size = int(self.size)
+        if self.scaled_image:
+            rect = self.scaled_image.get_rect(center=(int(self.x), int(self.y)))
+            screen.blit(self.scaled_image, rect)
+        else:
+            # Fallback to colored circle with individual size
+            pygame.draw.circle(screen, TYPE_COLORS[self.entity_type], 
+                             (int(self.x), int(self.y)), size // 2)
+            pygame.draw.circle(screen, BLACK, 
+                             (int(self.x), int(self.y)), size // 2, 2)
+    
+    def inherit_properties_from(self, parent):
+        """Copy evolutionary properties from a parent (winner in collision)"""
+        self._inherit_balanced(parent)
+        self._update_scaled_image()
