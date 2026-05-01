@@ -20,6 +20,7 @@ from config import (
     MAX_SIZE, MAX_FLEE_DISTANCE, MAX_ATTACK_DISTANCE,
     SAME_TYPE_REPEL_RADIUS, SAME_TYPE_REPEL_STRENGTH,
     SPATIAL_GRID_CELL_SIZE, SHARED_CALC_ENABLED, SHARED_CALC_RADIUS,
+    GROWTH_ENABLED,
     ROCK, PAPER, SCISSORS, BEATS, TYPE_COLORS
 )
 from entity import Entity
@@ -156,6 +157,10 @@ class Game:
         # Monotonic counter that bumps every entity-update sub-iteration so
         # the per-tick neighbor cache invalidates between sub-iterations.
         self._update_tick = 0
+
+        # Post-conversion growth (newly converted entities start small and
+        # grow over time). Toggleable in UI.
+        self.growth_enabled = GROWTH_ENABLED
 
         # GPU acceleration flag
         self.use_gpu = GPU_AVAILABLE
@@ -301,6 +306,14 @@ class Game:
         })
         y += button_spacing
 
+        # Growth toggle
+        buttons.append({
+            'rect': pygame.Rect(button_x, y, button_width, button_height),
+            'text': 'Growth: ON' if self.growth_enabled else 'Growth: OFF',
+            'action': 'toggle_growth'
+        })
+        y += button_spacing
+
         # Recording toggle
         buttons.append({
             'rect': pygame.Rect(button_x, y, button_width, button_height),
@@ -336,8 +349,13 @@ class Game:
         if y is None:
             y = random.randint(ENTITY_SIZE, self.game_area.height - ENTITY_SIZE)
         
-        entity = Entity(x, y, entity_type, self.images.get(entity_type), 
-                       parent=parent, evolution_enabled=self.evolution_enabled)
+        entity = Entity(
+            x, y, entity_type, self.images.get(entity_type),
+            parent=parent,
+            evolution_enabled=self.evolution_enabled,
+            growth_enabled=self.growth_enabled,
+            current_frame=self.frame_count,
+        )
         self.entities.append(entity)
     
     def count_entities(self):
@@ -431,6 +449,12 @@ class Game:
             self.update_buttons()
         elif action == 'toggle_shared_calc':
             self.shared_calc_enabled = not self.shared_calc_enabled
+            self.update_buttons()
+        elif action == 'toggle_growth':
+            self.growth_enabled = not self.growth_enabled
+            # Apply immediately to live entities so the toggle is visible.
+            for entity in self.entities:
+                entity.reset_size_state(self.growth_enabled, self.frame_count)
             self.update_buttons()
         elif action == 'toggle_recording':
             self.recording_enabled = not self.recording_enabled
@@ -716,6 +740,16 @@ class Game:
             grid.build(self.entities)
             self.check_collisions()
         
+        # Apply post-conversion growth. Per-frame rather than per-sub-iteration
+        # so growth speed is tied to wall-clock seconds, not speed_multiplier.
+        # Hot path: try_grow short-circuits on a single attribute compare for
+        # fully-grown entities, so this is cheap even at large N.
+        if self.growth_enabled:
+            cf = self.frame_count
+            for entity in self.entities:
+                if entity.try_grow(cf):
+                    entity._update_scaled_image()
+
         # Record population for graphing
         self.frame_count += 1
         if self.graphing_enabled and self.frame_count % self.record_interval == 0:
@@ -782,13 +816,16 @@ class Game:
                     self.conversions[e2_type] += 1
 
         # Apply conversions
+        growth_on = self.growth_enabled
+        cf = self.frame_count
         for entity, new_type, winner in conversions:
             entity.entity_type = new_type
             entity.base_image = self.images.get(new_type)
             if self.evolution_enabled:
                 entity.inherit_properties_from(winner)
-            else:
-                entity._update_scaled_image()
+            # reset_size_state handles both growth-on (start small, grow up)
+            # and growth-off (snap to evolved size) and re-scales the image.
+            entity.reset_size_state(growth_on, cf)
     
     def open_realtime_graph(self):
         """Open a real-time graph window"""

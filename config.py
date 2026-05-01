@@ -116,6 +116,15 @@ SPATIAL_GRID_CELL_SIZE = 100
 SHARED_CALC_ENABLED = True
 SHARED_CALC_RADIUS = 80
 
+# Post-conversion growth: newly spawned/converted entities start small and
+# attempt to grow once every GROWTH_INTERVAL_FRAMES with GROWTH_CHANCE per
+# attempt, gaining GROWTH_INCREMENT pixels each success up to MAX_SIZE.
+GROWTH_ENABLED = True
+GROWTH_CHANCE = 0.6
+GROWTH_INTERVAL_FRAMES = FPS  # 1 second at default FPS
+GROWTH_INCREMENT = MAX_SIZE / 5  # 1/5 of the max size per growth tick
+GROWTH_START_SIZE = MIN_SIZE
+
 # Colors for each type (fallback if images don't load)
 TYPE_COLORS = {
     ROCK: (139, 69, 19),     # Brown

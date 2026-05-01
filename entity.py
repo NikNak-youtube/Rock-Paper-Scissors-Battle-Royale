@@ -12,6 +12,8 @@ from config import (
     MIN_FLEE_DISTANCE, MAX_FLEE_DISTANCE,
     MIN_ATTACK_DISTANCE, MAX_ATTACK_DISTANCE,
     SAME_TYPE_REPEL_RADIUS, SAME_TYPE_REPEL_STRENGTH,
+    GROWTH_CHANCE, GROWTH_INTERVAL_FRAMES, GROWTH_INCREMENT,
+    GROWTH_START_SIZE,
     BLACK
 )
 
@@ -30,7 +32,8 @@ class Entity:
     # image and size pixel-bucket reuse the same surface.
     _scaled_image_cache = {}
     
-    def __init__(self, x, y, entity_type, image=None, parent=None, evolution_enabled=True):
+    def __init__(self, x, y, entity_type, image=None, parent=None,
+                 evolution_enabled=True, growth_enabled=False, current_frame=0):
         self.x = x
         self.y = y
         self.entity_type = entity_type
@@ -43,7 +46,7 @@ class Entity:
         # _cache_data was populated; mismatched tick means stale and ignored.
         self._cache_tick = -1
         self._cache_data = None
-        
+
         # Evolutionary properties (stored as normalized 0-1 values internally)
         if evolution_enabled and parent:
             # Inherit from parent with balanced mutation
@@ -57,12 +60,14 @@ class Entity:
             self._speed_norm = 0.5
             self._flee_norm = 0.5
             self._attack_norm = 0.5
-        
+
+        # Initialize size state. When growth is on, start small and grow up;
+        # otherwise size is fixed at the evolved value. self.size becomes a
+        # plain attribute (was a @property) so growth can mutate it cheaply.
+        self.reset_size_state(growth_enabled, current_frame)
+
         self.vx = random.uniform(-self.speed, self.speed)
         self.vy = random.uniform(-self.speed, self.speed)
-        
-        # Update image size if evolution enabled
-        self._update_scaled_image()
     
     def _init_random_balanced(self):
         """Initialize with random values that sum to PROPERTY_BUDGET"""
@@ -134,11 +139,47 @@ class Entity:
         
         return values
     
-    # Property getters that convert normalized values to actual ranges
-    @property
-    def size(self):
+    # `size` was previously a @property derived from _size_norm. It's now a
+    # plain attribute set by reset_size_state / try_grow, since growth needs
+    # to mutate it directly. _evolved_size is the value it would take with
+    # no growth (i.e. the evolution target).
+    def _evolved_size(self):
         return MIN_SIZE + self._size_norm * (MAX_SIZE - MIN_SIZE)
-    
+
+    def reset_size_state(self, growth_enabled, current_frame):
+        """Reset size + growth bookkeeping. Called on init and on conversion."""
+        if growth_enabled:
+            self.size = float(GROWTH_START_SIZE)
+            self._fully_grown = False
+            self._next_grow_frame = current_frame + GROWTH_INTERVAL_FRAMES
+        else:
+            self.size = self._evolved_size()
+            # Mark as done so try_grow short-circuits cheaply.
+            self._fully_grown = True
+            self._next_grow_frame = 0
+        self._update_scaled_image()
+
+    def try_grow(self, current_frame):
+        """One growth tick. Returns True iff the size actually changed.
+
+        Hot path: most calls are for fully-grown entities and exit on the
+        first attribute compare. The next_grow_frame check then filters the
+        rest until the timer elapses, so RNG only runs on actual attempts.
+        """
+        if self._fully_grown:
+            return False
+        if current_frame < self._next_grow_frame:
+            return False
+        self._next_grow_frame = current_frame + GROWTH_INTERVAL_FRAMES
+        if random.random() >= GROWTH_CHANCE:
+            return False
+        new_size = self.size + GROWTH_INCREMENT
+        if new_size >= MAX_SIZE:
+            new_size = MAX_SIZE
+            self._fully_grown = True
+        self.size = new_size
+        return True
+
     @property
     def speed(self):
         return MIN_SPEED + self._speed_norm * (MAX_SPEED - MIN_SPEED)
@@ -354,6 +395,10 @@ class Entity:
                              (int(self.x), int(self.y)), size // 2, 2)
     
     def inherit_properties_from(self, parent):
-        """Copy evolutionary properties from a parent (winner in collision)"""
+        """Copy evolutionary properties from a parent (winner in collision).
+
+        Caller is responsible for calling reset_size_state() afterward, since
+        growth state (and therefore the displayed size) depends on whether
+        growth is enabled at the game level.
+        """
         self._inherit_balanced(parent)
-        self._update_scaled_image()
