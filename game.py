@@ -15,7 +15,7 @@ from config import (
     NUM_THREADS, DEFAULT_SCREEN_WIDTH, DEFAULT_SCREEN_HEIGHT,
     MIN_SCREEN_WIDTH, MIN_SCREEN_HEIGHT, UI_PANEL_WIDTH, FPS,
     WHITE, BLACK, GRAY, DARK_GRAY, GREEN, YELLOW,
-    ENTITY_SIZE, INITIAL_COUNT, EVOLUTION_ENABLED,
+    ENTITY_SIZE, INITIAL_COUNT, MAX_ENTITIES, EVOLUTION_ENABLED,
     EDGE_WRAP, RECORDING_ENABLED, RECORDING_FOLDER,
     MAX_SIZE, MAX_FLEE_DISTANCE, MAX_ATTACK_DISTANCE,
     SAME_TYPE_REPEL_RADIUS, SAME_TYPE_REPEL_STRENGTH,
@@ -208,8 +208,8 @@ class Game:
         buttons = []
         button_x = self.screen_width - UI_PANEL_WIDTH + 10
         button_width = UI_PANEL_WIDTH - 20
-        button_height = 30
-        button_spacing = 33
+        button_height = 28
+        button_spacing = 31
         
         # Start buttons after the stats section (around y=250)
         start_y = 250
@@ -264,7 +264,8 @@ class Game:
         })
         y += button_spacing
         
-        # Initial count adjustment buttons (smaller, side by side)
+        # Initial count adjustment buttons (smaller, side by side).
+        # Top row: ±5; bottom row: ±100 for fast scaling toward MAX_ENTITIES.
         half_width = button_width // 2 - 5
         buttons.append({
             'rect': pygame.Rect(button_x, y, half_width, button_height),
@@ -275,6 +276,18 @@ class Game:
             'rect': pygame.Rect(button_x + half_width + 10, y, half_width, button_height),
             'text': 'Count +',
             'action': 'count_up'
+        })
+        y += button_spacing
+
+        buttons.append({
+            'rect': pygame.Rect(button_x, y, half_width, button_height),
+            'text': 'Count --',
+            'action': 'count_down_big'
+        })
+        buttons.append({
+            'rect': pygame.Rect(button_x + half_width + 10, y, half_width, button_height),
+            'text': 'Count ++',
+            'action': 'count_up_big'
         })
         y += button_spacing
         
@@ -449,7 +462,13 @@ class Game:
             self.initial_count = max(1, self.initial_count - 5)
             self.reset_game()
         elif action == 'count_up':
-            self.initial_count = min(500, self.initial_count + 5)
+            self.initial_count = min(MAX_ENTITIES // 3, self.initial_count + 5)
+            self.reset_game()
+        elif action == 'count_down_big':
+            self.initial_count = max(1, self.initial_count - 100)
+            self.reset_game()
+        elif action == 'count_up_big':
+            self.initial_count = min(MAX_ENTITIES // 3, self.initial_count + 100)
             self.reset_game()
         elif action == 'toggle_graph':
             self.graphing_enabled = not self.graphing_enabled

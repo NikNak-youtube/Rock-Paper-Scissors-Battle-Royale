@@ -67,6 +67,7 @@ YELLOW = (255, 255, 100)
 ENTITY_SIZE = 40
 ENTITY_SPEED = 2
 INITIAL_COUNT = 15  # Initial count per type
+MAX_ENTITIES = 6000  # Total simulation cap across all types (per-type cap = MAX_ENTITIES // 3)
 SAME_TYPE_REPEL_RADIUS = 50  # Radius for soft collision between same types
 SAME_TYPE_REPEL_STRENGTH = 0.5  # How strongly same types push each other away
 
@@ -131,7 +132,7 @@ GROWTH_START_SIZE = MIN_SIZE
 # via BLEND_RGBA_MULT — values near 255 leave the image alone, lower values
 # darken/colorize.
 TINT_ENABLED = True
-TINT_MUTATION = 18         # max per-channel drift per conversion (±)
+TINT_MUTATION = 2         # max per-channel drift per conversion (±)
 TINT_INIT_MIN = 80         # initial random tint floor (avoid muddy darks)
 TINT_INIT_MAX = 255
 
