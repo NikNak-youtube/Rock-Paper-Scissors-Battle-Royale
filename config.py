@@ -125,6 +125,16 @@ GROWTH_INTERVAL_FRAMES = FPS  # 1 second at default FPS
 GROWTH_INCREMENT = MAX_SIZE / 5  # 1/5 of the max size per growth tick
 GROWTH_START_SIZE = MIN_SIZE
 
+# RGB tint genome: independent of evolution's size/speed budget. On conversion
+# the loser inherits the winner's tint with a small per-channel mutation, so
+# you can visually trace lineages over time. Tint is applied to the sprite
+# via BLEND_RGBA_MULT — values near 255 leave the image alone, lower values
+# darken/colorize.
+TINT_ENABLED = True
+TINT_MUTATION = 18         # max per-channel drift per conversion (±)
+TINT_INIT_MIN = 80         # initial random tint floor (avoid muddy darks)
+TINT_INIT_MAX = 255
+
 # Colors for each type (fallback if images don't load)
 TYPE_COLORS = {
     ROCK: (139, 69, 19),     # Brown

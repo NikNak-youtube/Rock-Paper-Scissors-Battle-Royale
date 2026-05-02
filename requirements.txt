@@ -1,3 +1,4 @@
 pygame-ce
 matplotlib
-cupy
+cupy-cuda13x
+cupy-cuda12x

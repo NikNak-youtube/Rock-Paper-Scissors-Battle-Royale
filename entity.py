@@ -14,6 +14,7 @@ from config import (
     SAME_TYPE_REPEL_RADIUS, SAME_TYPE_REPEL_STRENGTH,
     GROWTH_CHANCE, GROWTH_INTERVAL_FRAMES, GROWTH_INCREMENT,
     GROWTH_START_SIZE,
+    TINT_MUTATION, TINT_INIT_MIN, TINT_INIT_MAX,
     BLACK
 )
 
@@ -33,7 +34,8 @@ class Entity:
     _scaled_image_cache = {}
     
     def __init__(self, x, y, entity_type, image=None, parent=None,
-                 evolution_enabled=True, growth_enabled=False, current_frame=0):
+                 evolution_enabled=True, growth_enabled=False, current_frame=0,
+                 tint_enabled=True):
         self.x = x
         self.y = y
         self.entity_type = entity_type
@@ -60,6 +62,14 @@ class Entity:
             self._speed_norm = 0.5
             self._flee_norm = 0.5
             self._attack_norm = 0.5
+
+        # RGB tint genome — independent of the evolution property budget so
+        # families remain visually traceable regardless of evolution toggle.
+        if parent is not None:
+            self._inherit_tint(parent)
+        else:
+            self._init_random_tint()
+        self._tint_enabled = tint_enabled
 
         # Initialize size state. When growth is on, start small and grow up;
         # otherwise size is fixed at the evolved value. self.size becomes a
@@ -198,19 +208,67 @@ class Entity:
         new_value = value + mutation
         return max(min_val, min(max_val, new_value))
     
+    def _init_random_tint(self):
+        """Random initial tint within the configured channel range."""
+        self._tint_r = random.randint(TINT_INIT_MIN, TINT_INIT_MAX)
+        self._tint_g = random.randint(TINT_INIT_MIN, TINT_INIT_MAX)
+        self._tint_b = random.randint(TINT_INIT_MIN, TINT_INIT_MAX)
+
+    def _inherit_tint(self, parent):
+        """Inherit parent's tint with a small per-channel mutation."""
+        m = TINT_MUTATION
+        r = parent._tint_r + random.randint(-m, m)
+        g = parent._tint_g + random.randint(-m, m)
+        b = parent._tint_b + random.randint(-m, m)
+        # Clamp into the same range we use for fresh entities so dark drift
+        # doesn't accumulate over generations.
+        self._tint_r = TINT_INIT_MIN if r < TINT_INIT_MIN else (255 if r > 255 else r)
+        self._tint_g = TINT_INIT_MIN if g < TINT_INIT_MIN else (255 if g > 255 else g)
+        self._tint_b = TINT_INIT_MIN if b < TINT_INIT_MIN else (255 if b > 255 else b)
+
+    def inherit_tint_from(self, parent):
+        """Public hook called by Game on conversion."""
+        self._inherit_tint(parent)
+        # Caller is expected to call _update_scaled_image() afterward (or
+        # reset_size_state, which calls it).
+
+    def set_tint_enabled(self, enabled):
+        """Toggle tint rendering for this entity. Cheap if value is unchanged."""
+        if self._tint_enabled != enabled:
+            self._tint_enabled = enabled
+            self._update_scaled_image()
+
     def _update_scaled_image(self):
-        """Scale the image based on entity size, sharing surfaces via cache."""
-        if self.base_image:
-            size = int(self.size)
-            key = (id(self.base_image), size)
-            cache = Entity._scaled_image_cache
-            cached = cache.get(key)
-            if cached is None:
-                cached = pygame.transform.scale(self.base_image, (size, size))
-                cache[key] = cached
-            self.scaled_image = cached
-        else:
+        """Build this entity's display surface, tinting if enabled.
+
+        The base scaled image (untinted) is shared via class-level cache.
+        Tinted copies are per-entity to avoid an unbounded shared cache when
+        every lineage has a slightly different RGB.
+        """
+        if not self.base_image:
             self.scaled_image = None
+            return
+
+        size = int(self.size)
+        base_key = (id(self.base_image), size)
+        cache = Entity._scaled_image_cache
+        base_scaled = cache.get(base_key)
+        if base_scaled is None:
+            base_scaled = pygame.transform.scale(self.base_image, (size, size))
+            cache[base_key] = base_scaled
+
+        if not self._tint_enabled:
+            self.scaled_image = base_scaled
+            return
+
+        # Per-entity tinted copy. Cost: one Surface.copy + one fill, only
+        # when size or tint changes (growth ticks, conversions, or toggle).
+        tinted = base_scaled.copy()
+        tinted.fill(
+            (self._tint_r, self._tint_g, self._tint_b, 255),
+            special_flags=pygame.BLEND_RGBA_MULT,
+        )
+        self.scaled_image = tinted
 
     def update(self, neighbors, screen_width, screen_height, edge_wrap=False,
                tick=0, share_radius_sq=0.0):

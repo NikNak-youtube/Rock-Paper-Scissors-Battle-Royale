@@ -20,7 +20,7 @@ from config import (
     MAX_SIZE, MAX_FLEE_DISTANCE, MAX_ATTACK_DISTANCE,
     SAME_TYPE_REPEL_RADIUS, SAME_TYPE_REPEL_STRENGTH,
     SPATIAL_GRID_CELL_SIZE, SHARED_CALC_ENABLED, SHARED_CALC_RADIUS,
-    GROWTH_ENABLED,
+    GROWTH_ENABLED, TINT_ENABLED,
     ROCK, PAPER, SCISSORS, BEATS, TYPE_COLORS
 )
 from entity import Entity
@@ -162,6 +162,10 @@ class Game:
         # grow over time). Toggleable in UI.
         self.growth_enabled = GROWTH_ENABLED
 
+        # RGB lineage tint. Genome is always inherited so toggling off and
+        # back on still shows the family colors that drifted in between.
+        self.tint_enabled = TINT_ENABLED
+
         # GPU acceleration flag
         self.use_gpu = GPU_AVAILABLE
         
@@ -204,8 +208,8 @@ class Game:
         buttons = []
         button_x = self.screen_width - UI_PANEL_WIDTH + 10
         button_width = UI_PANEL_WIDTH - 20
-        button_height = 32
-        button_spacing = 36
+        button_height = 30
+        button_spacing = 33
         
         # Start buttons after the stats section (around y=250)
         start_y = 250
@@ -314,6 +318,14 @@ class Game:
         })
         y += button_spacing
 
+        # Tint toggle
+        buttons.append({
+            'rect': pygame.Rect(button_x, y, button_width, button_height),
+            'text': 'Tint: ON' if self.tint_enabled else 'Tint: OFF',
+            'action': 'toggle_tint'
+        })
+        y += button_spacing
+
         # Recording toggle
         buttons.append({
             'rect': pygame.Rect(button_x, y, button_width, button_height),
@@ -355,6 +367,7 @@ class Game:
             evolution_enabled=self.evolution_enabled,
             growth_enabled=self.growth_enabled,
             current_frame=self.frame_count,
+            tint_enabled=self.tint_enabled,
         )
         self.entities.append(entity)
     
@@ -455,6 +468,11 @@ class Game:
             # Apply immediately to live entities so the toggle is visible.
             for entity in self.entities:
                 entity.reset_size_state(self.growth_enabled, self.frame_count)
+            self.update_buttons()
+        elif action == 'toggle_tint':
+            self.tint_enabled = not self.tint_enabled
+            for entity in self.entities:
+                entity.set_tint_enabled(self.tint_enabled)
             self.update_buttons()
         elif action == 'toggle_recording':
             self.recording_enabled = not self.recording_enabled
@@ -823,8 +841,12 @@ class Game:
             entity.base_image = self.images.get(new_type)
             if self.evolution_enabled:
                 entity.inherit_properties_from(winner)
+            # Always inherit tint genome so the lineage trail survives
+            # toggling tint render off and on.
+            entity.inherit_tint_from(winner)
             # reset_size_state handles both growth-on (start small, grow up)
-            # and growth-off (snap to evolved size) and re-scales the image.
+            # and growth-off (snap to evolved size) and re-scales the image
+            # (which also re-applies the tint when render is enabled).
             entity.reset_size_state(growth_on, cf)
     
     def open_realtime_graph(self):
