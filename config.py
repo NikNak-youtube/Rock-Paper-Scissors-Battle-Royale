@@ -136,6 +136,22 @@ TINT_MUTATION = 2         # max per-channel drift per conversion (±)
 TINT_INIT_MIN = 80         # initial random tint floor (avoid muddy darks)
 TINT_INIT_MAX = 255
 
+# Communication: same-type entities can broadcast the location of a known
+# enemy to nearby allies. Two genetic traits — radius (how far a signal
+# carries) and chance (per-entity success probability, used both as the
+# sender and the receiver). A signal goes through only if BOTH the sender
+# and the receiver pass their chance roll. Inherited independently of the
+# size/speed property budget, like tint.
+COMM_ENABLED = True
+MIN_COMM_RADIUS = 60
+MAX_COMM_RADIUS = 250
+COMM_CHANCE_MIN = 0.01
+COMM_CHANCE_MAX = 0.15
+COMM_TRIGGER_CHANCE = 0.30          # chance per frame to attempt broadcast when prey visible
+COMM_COOLDOWN_FRAMES = FPS          # 1 broadcast per entity per second
+COMM_KNOWLEDGE_DURATION_FRAMES = FPS * 4  # how long a learned location stays "fresh"
+COMM_MUTATION = 0.10                # max drift per conversion as fraction of full range
+
 # Colors for each type (fallback if images don't load)
 TYPE_COLORS = {
     ROCK: (139, 69, 19),     # Brown

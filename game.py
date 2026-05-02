@@ -21,6 +21,8 @@ from config import (
     SAME_TYPE_REPEL_RADIUS, SAME_TYPE_REPEL_STRENGTH,
     SPATIAL_GRID_CELL_SIZE, SHARED_CALC_ENABLED, SHARED_CALC_RADIUS,
     GROWTH_ENABLED, TINT_ENABLED,
+    COMM_ENABLED, COMM_TRIGGER_CHANCE, COMM_COOLDOWN_FRAMES,
+    COMM_KNOWLEDGE_DURATION_FRAMES,
     ROCK, PAPER, SCISSORS, BEATS, TYPE_COLORS
 )
 from entity import Entity
@@ -166,6 +168,10 @@ class Game:
         # back on still shows the family colors that drifted in between.
         self.tint_enabled = TINT_ENABLED
 
+        # Communication: same-type entities can broadcast known prey
+        # locations to nearby allies. Genome is always inherited.
+        self.comm_enabled = COMM_ENABLED
+
         # GPU acceleration flag
         self.use_gpu = GPU_AVAILABLE
         
@@ -208,8 +214,8 @@ class Game:
         buttons = []
         button_x = self.screen_width - UI_PANEL_WIDTH + 10
         button_width = UI_PANEL_WIDTH - 20
-        button_height = 28
-        button_spacing = 31
+        button_height = 26
+        button_spacing = 29
         
         # Start buttons after the stats section (around y=250)
         start_y = 250
@@ -336,6 +342,14 @@ class Game:
             'rect': pygame.Rect(button_x, y, button_width, button_height),
             'text': 'Tint: ON' if self.tint_enabled else 'Tint: OFF',
             'action': 'toggle_tint'
+        })
+        y += button_spacing
+
+        # Communication toggle
+        buttons.append({
+            'rect': pygame.Rect(button_x, y, button_width, button_height),
+            'text': 'Comms: ON' if self.comm_enabled else 'Comms: OFF',
+            'action': 'toggle_comms'
         })
         y += button_spacing
 
@@ -493,6 +507,9 @@ class Game:
             for entity in self.entities:
                 entity.set_tint_enabled(self.tint_enabled)
             self.update_buttons()
+        elif action == 'toggle_comms':
+            self.comm_enabled = not self.comm_enabled
+            self.update_buttons()
         elif action == 'toggle_recording':
             self.recording_enabled = not self.recording_enabled
             if self.recording_enabled:
@@ -527,7 +544,8 @@ class Game:
             self.recording_frame += 1
     
     def update_entity_batch(self, entities_batch, grid, query_radius, width, height,
-                            edge_wrap, tick, share_radius_sq):
+                            edge_wrap, tick, share_radius_sq,
+                            comm_enabled, current_frame):
         """Update a batch of entities (called in thread).
 
         Each entity queries the shared spatial grid for its own neighbor list.
@@ -536,7 +554,11 @@ class Game:
         for entity in entities_batch:
             neighbors = grid.query_radius(entity.x, entity.y, query_radius)
             entity.update(neighbors, width, height, edge_wrap,
-                          tick=tick, share_radius_sq=share_radius_sq)
+                          tick=tick, share_radius_sq=share_radius_sq,
+                          comm_enabled=comm_enabled, current_frame=current_frame,
+                          comm_trigger_chance=COMM_TRIGGER_CHANCE,
+                          comm_cooldown_frames=COMM_COOLDOWN_FRAMES,
+                          comm_knowledge_frames=COMM_KNOWLEDGE_DURATION_FRAMES)
     
     def gpu_update_entities(self):
         """GPU-accelerated entity position and velocity updates"""
@@ -720,6 +742,8 @@ class Game:
         grid = self.spatial_grid
         query_radius = self._neighbor_query_radius
         share_radius_sq = self._share_radius_sq if self.shared_calc_enabled else 0.0
+        comm_on = self.comm_enabled
+        cf = self.frame_count
 
         for _ in range(updates):
             # Bump tick so cached neighbor scans from prior sub-iterations
@@ -742,7 +766,11 @@ class Game:
                     for entity in self.entities:
                         neighbors = grid.query_radius(entity.x, entity.y, query_radius)
                         entity.update(neighbors, width, height, self.edge_wrap,
-                                      tick=tick, share_radius_sq=share_radius_sq)
+                                      tick=tick, share_radius_sq=share_radius_sq,
+                                      comm_enabled=comm_on, current_frame=cf,
+                                      comm_trigger_chance=COMM_TRIGGER_CHANCE,
+                                      comm_cooldown_frames=COMM_COOLDOWN_FRAMES,
+                                      comm_knowledge_frames=COMM_KNOWLEDGE_DURATION_FRAMES)
             elif len(self.entities) > 50:
                 # CPU parallel updates: build grid once, threads query it.
                 grid.build(self.entities)
@@ -756,7 +784,8 @@ class Game:
                     self.thread_pool.submit(
                         self.update_entity_batch,
                         batch, grid, query_radius, width, height,
-                        self.edge_wrap, tick, share_radius_sq
+                        self.edge_wrap, tick, share_radius_sq,
+                        comm_on, cf
                     )
                     for batch in batches
                 ]
@@ -770,7 +799,11 @@ class Game:
                 for entity in self.entities:
                     neighbors = grid.query_radius(entity.x, entity.y, query_radius)
                     entity.update(neighbors, width, height, self.edge_wrap,
-                                  tick=tick, share_radius_sq=share_radius_sq)
+                                  tick=tick, share_radius_sq=share_radius_sq,
+                                  comm_enabled=comm_on, current_frame=cf,
+                                  comm_trigger_chance=COMM_TRIGGER_CHANCE,
+                                  comm_cooldown_frames=COMM_COOLDOWN_FRAMES,
+                                  comm_knowledge_frames=COMM_KNOWLEDGE_DURATION_FRAMES)
 
             # Rebuild grid against post-update positions so collision queries
             # see entities in their current cells.
@@ -863,6 +896,8 @@ class Game:
             # Always inherit tint genome so the lineage trail survives
             # toggling tint render off and on.
             entity.inherit_tint_from(winner)
+            # Always inherit comm genome (same rationale).
+            entity.inherit_comm_from(winner)
             # reset_size_state handles both growth-on (start small, grow up)
             # and growth-off (snap to evolved size) and re-scales the image
             # (which also re-applies the tint when render is enabled).

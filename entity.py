@@ -15,6 +15,8 @@ from config import (
     GROWTH_CHANCE, GROWTH_INTERVAL_FRAMES, GROWTH_INCREMENT,
     GROWTH_START_SIZE,
     TINT_MUTATION, TINT_INIT_MIN, TINT_INIT_MAX,
+    MIN_COMM_RADIUS, MAX_COMM_RADIUS,
+    COMM_CHANCE_MIN, COMM_CHANCE_MAX, COMM_MUTATION,
     BLACK
 )
 
@@ -70,6 +72,20 @@ class Entity:
         else:
             self._init_random_tint()
         self._tint_enabled = tint_enabled
+
+        # Communication genome (also independent of property budget).
+        if parent is not None:
+            self._inherit_comm(parent)
+        else:
+            self._init_random_comm()
+
+        # Communication state. _last_broadcast_frame far in the past so the
+        # cooldown allows a broadcast immediately when the entity first sees
+        # prey. _known_prey_frame far in the past = no fresh knowledge.
+        self._last_broadcast_frame = -1_000_000
+        self._known_prey_x = 0.0
+        self._known_prey_y = 0.0
+        self._known_prey_frame = -1_000_000
 
         # Initialize size state. When growth is on, start small and grow up;
         # otherwise size is fixed at the evolved value. self.size becomes a
@@ -232,6 +248,28 @@ class Entity:
         # Caller is expected to call _update_scaled_image() afterward (or
         # reset_size_state, which calls it).
 
+    def _init_random_comm(self):
+        """Random initial communication traits within configured ranges."""
+        self._comm_radius = random.uniform(MIN_COMM_RADIUS, MAX_COMM_RADIUS)
+        self._comm_chance = random.uniform(COMM_CHANCE_MIN, COMM_CHANCE_MAX)
+
+    def _inherit_comm(self, parent):
+        """Inherit comm genome from parent with bounded mutation."""
+        rad_drift = (MAX_COMM_RADIUS - MIN_COMM_RADIUS) * COMM_MUTATION
+        chc_drift = (COMM_CHANCE_MAX - COMM_CHANCE_MIN) * COMM_MUTATION
+        r = parent._comm_radius + random.uniform(-rad_drift, rad_drift)
+        c = parent._comm_chance + random.uniform(-chc_drift, chc_drift)
+        if r < MIN_COMM_RADIUS: r = MIN_COMM_RADIUS
+        elif r > MAX_COMM_RADIUS: r = MAX_COMM_RADIUS
+        if c < COMM_CHANCE_MIN: c = COMM_CHANCE_MIN
+        elif c > COMM_CHANCE_MAX: c = COMM_CHANCE_MAX
+        self._comm_radius = r
+        self._comm_chance = c
+
+    def inherit_comm_from(self, parent):
+        """Public hook called by Game on conversion."""
+        self._inherit_comm(parent)
+
     def set_tint_enabled(self, enabled):
         """Toggle tint rendering for this entity. Cheap if value is unchanged."""
         if self._tint_enabled != enabled:
@@ -271,7 +309,10 @@ class Entity:
         self.scaled_image = tinted
 
     def update(self, neighbors, screen_width, screen_height, edge_wrap=False,
-               tick=0, share_radius_sq=0.0):
+               tick=0, share_radius_sq=0.0,
+               comm_enabled=False, current_frame=0,
+               comm_trigger_chance=0.0, comm_cooldown_frames=0,
+               comm_knowledge_frames=0):
         """Update entity position and behavior.
 
         `neighbors` is the candidate list from the spatial grid (already
@@ -374,7 +415,36 @@ class Entity:
             self._cache_tick = tick
             self._cache_data = cache
 
-        # Behavior: flee if threat in range, else chase prey, else wander.
+        # Communication: if prey is visible, update self memory and (gated by
+        # cooldown + trigger + sender chance) broadcast to nearby same-type
+        # entities. Each receiver rolls its own comm_chance to understand.
+        if comm_enabled and nearest_prey_dist_sq != float('inf'):
+            prey_abs_x = sx + nearest_prey_dx
+            prey_abs_y = sy + nearest_prey_dy
+            self._known_prey_x = prey_abs_x
+            self._known_prey_y = prey_abs_y
+            self._known_prey_frame = current_frame
+
+            if (current_frame - self._last_broadcast_frame >= comm_cooldown_frames
+                    and random.random() < comm_trigger_chance):
+                # Cooldown gates the trigger; sender chance gates the actual send.
+                self._last_broadcast_frame = current_frame
+                if random.random() < self._comm_chance:
+                    radius_sq = self._comm_radius * self._comm_radius
+                    for entity in neighbors:
+                        if entity is self or entity.entity_type != my_type:
+                            continue
+                        dx = entity.x - sx
+                        dy = entity.y - sy
+                        if dx * dx + dy * dy > radius_sq:
+                            continue
+                        if random.random() < entity._comm_chance:
+                            entity._known_prey_x = prey_abs_x
+                            entity._known_prey_y = prey_abs_y
+                            entity._known_prey_frame = current_frame
+
+        # Behavior: flee if threat in range, else chase visible prey, else
+        # chase remembered prey location (fresh knowledge), else wander.
         if nearest_threat_dist_sq < flee_dist_sq:
             dist = math.sqrt(nearest_threat_dist_sq)
             if dist < 0.1:
@@ -389,6 +459,22 @@ class Entity:
             inv = speed / dist
             target_dx = nearest_prey_dx * inv
             target_dy = nearest_prey_dy * inv
+        elif (comm_enabled
+              and current_frame - self._known_prey_frame < comm_knowledge_frames):
+            # Move toward remembered prey location (own observation or relayed).
+            dx = self._known_prey_x - sx
+            dy = self._known_prey_y - sy
+            dist_sq = dx * dx + dy * dy
+            if dist_sq > 1.0:
+                dist = math.sqrt(dist_sq)
+                inv = speed / dist
+                target_dx = dx * inv
+                target_dy = dy * inv
+            else:
+                # Reached the location — drop the stale memory and wander.
+                self._known_prey_frame = -1_000_000
+                target_dx = self.vx
+                target_dy = self.vy
         else:
             if random.random() < 0.02:
                 self.vx = random.uniform(-speed, speed)
