@@ -59,13 +59,25 @@ When two entities collide, the winner converts the loser to its own type. The ba
 | **R** | Restart simulation |
 | **ESC** | Quit game |
 | **Left Click** (game area) | Add random entity at cursor |
+| **Right Click** (game area) | Possess the entity under the cursor (empty space releases) |
+| **WASD / Arrow Keys** | Steer the possessed entity |
 | **Drag window edges** | Resize window dynamically |
+
+### 🕹️ Possession Mode
+Right-click any entity to take direct control of it. A pulsing yellow ring and a
+**"YOU"** tag mark the entity you're driving, and the side panel shows what type
+you're **Controlling**. Steer with **WASD** or the **arrow keys** — the entity
+ignores its AI while possessed but still collides normally, so you can hunt down
+prey, dodge threats, or convert rivals yourself. If your entity gets converted,
+you keep control of it as its new type. Right-click empty space or press
+**Release Ctrl** to let go.
 
 ### UI Buttons
 - **Start/Restart** - Reset the simulation
 - **Pause/Resume** - Toggle pause state
 - **Speed: Nx** - Cycle through speed multipliers (0.5x, 1x, 2x, 4x)
 - **Add Rock/Paper/Scissors** - Spawn specific entity types
+- **Possess: R-Click / Release Ctrl** - Release the possessed entity (right-click to possess one)
 - **Evolution: ON/OFF** - Toggle evolutionary properties (restarts simulation)
 - **Count -/+** - Adjust initial entity count per type (1-500)
 - **Graph: ON/OFF** - Toggle population data recording

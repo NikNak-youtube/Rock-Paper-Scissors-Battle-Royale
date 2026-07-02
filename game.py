@@ -5,6 +5,7 @@ Game class for Rock Paper Scissors Battle Royale
 import pygame
 import random
 import os
+import math
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -23,6 +24,7 @@ from config import (
     GROWTH_ENABLED, TINT_ENABLED,
     COMM_ENABLED, COMM_TRIGGER_CHANCE, COMM_COOLDOWN_FRAMES,
     COMM_KNOWLEDGE_DURATION_FRAMES,
+    PLAYER_CONTROL_SPEED,
     ROCK, PAPER, SCISSORS, BEATS, TYPE_COLORS
 )
 from entity import Entity
@@ -172,6 +174,10 @@ class Game:
         # locations to nearby allies. Genome is always inherited.
         self.comm_enabled = COMM_ENABLED
 
+        # Possession: the entity currently under direct player control (or None).
+        # Right-click an entity to possess it, then steer with WASD / arrows.
+        self.possessed_entity = None
+
         # GPU acceleration flag
         self.use_gpu = GPU_AVAILABLE
         
@@ -262,7 +268,15 @@ class Game:
             'action': 'add_scissors'
         })
         y += button_spacing
-        
+
+        # Release possession (only meaningful while an entity is controlled).
+        buttons.append({
+            'rect': pygame.Rect(button_x, y, button_width, button_height),
+            'text': 'Release Ctrl' if self.possessed_entity else 'Possess: R-Click',
+            'action': 'release_possession'
+        })
+        y += button_spacing
+
         buttons.append({
             'rect': pygame.Rect(button_x, y, button_width, button_height),
             'text': 'Evolution: ON' if self.evolution_enabled else 'Evolution: OFF',
@@ -370,7 +384,10 @@ class Game:
         self.paused = False
         self.conversions = {ROCK: 0, PAPER: 0, SCISSORS: 0}
         self._cached_counts = None
-        
+
+        # Drop any possession — the old entities are gone.
+        self.set_possessed(None)
+
         # Reset population history
         self.population_history = {ROCK: [], PAPER: [], SCISSORS: []}
         self.time_history = []
@@ -398,6 +415,63 @@ class Game:
         )
         self.entities.append(entity)
     
+    def entity_at_pos(self, pos):
+        """Return the entity whose sprite covers `pos`, or None.
+
+        If several overlap the point, the closest center wins.
+        """
+        px, py = pos
+        best = None
+        best_dist_sq = None
+        for entity in self.entities:
+            radius = entity.size / 2
+            dx = entity.x - px
+            dy = entity.y - py
+            dist_sq = dx * dx + dy * dy
+            if dist_sq <= radius * radius:
+                if best is None or dist_sq < best_dist_sq:
+                    best = entity
+                    best_dist_sq = dist_sq
+        return best
+
+    def set_possessed(self, entity):
+        """Take control of `entity` (or release control when it is None)."""
+        if self.possessed_entity is entity:
+            return
+        if self.possessed_entity is not None:
+            self.possessed_entity.possessed = False
+        self.possessed_entity = entity
+        if entity is not None:
+            entity.possessed = True
+            entity._ctrl_vx = 0.0
+            entity._ctrl_vy = 0.0
+        self.update_buttons()
+
+    def _update_possession_control(self):
+        """Translate the current keyboard state into the possessed entity's
+        control velocity. Called once per frame before entities update."""
+        entity = self.possessed_entity
+        if entity is None:
+            return
+        keys = pygame.key.get_pressed()
+        dx = 0.0
+        dy = 0.0
+        if keys[pygame.K_LEFT] or keys[pygame.K_a]:
+            dx -= 1.0
+        if keys[pygame.K_RIGHT] or keys[pygame.K_d]:
+            dx += 1.0
+        if keys[pygame.K_UP] or keys[pygame.K_w]:
+            dy -= 1.0
+        if keys[pygame.K_DOWN] or keys[pygame.K_s]:
+            dy += 1.0
+        if dx or dy:
+            mag = math.sqrt(dx * dx + dy * dy)
+            entity._ctrl_vx = dx / mag * PLAYER_CONTROL_SPEED
+            entity._ctrl_vy = dy / mag * PLAYER_CONTROL_SPEED
+        else:
+            entity._ctrl_vx = 0.0
+            entity._ctrl_vy = 0.0
+
     def count_entities(self):
         """Count entities of each type. Cached within a frame."""
         if self._cached_counts is not None:
@@ -436,7 +510,14 @@ class Game:
                     self.running = False
             elif event.type == pygame.MOUSEBUTTONDOWN:
                 mouse_pos = pygame.mouse.get_pos()
-                
+
+                # Right click: possess the entity under the cursor, or release
+                # control when clicking empty space.
+                if event.button == 3:
+                    if self.game_area.collidepoint(mouse_pos):
+                        self.set_possessed(self.entity_at_pos(mouse_pos))
+                    continue
+
                 # Check button clicks
                 for button in self.buttons:
                     if button['rect'].collidepoint(mouse_pos):
@@ -467,6 +548,8 @@ class Game:
             self.spawn_entity(PAPER)
         elif action == 'add_scissors':
             self.spawn_entity(SCISSORS)
+        elif action == 'release_possession':
+            self.set_possessed(None)
         elif action == 'toggle_evolution':
             self.evolution_enabled = not self.evolution_enabled
             self.update_buttons()
@@ -734,7 +817,10 @@ class Game:
 
         # Invalidate per-frame caches.
         self._cached_counts = None
-        
+
+        # Read keyboard into the possessed entity's control velocity.
+        self._update_possession_control()
+
         # Update entities multiple times based on speed
         updates = max(1, int(self.speed_multiplier))
         width = self.game_area.width
@@ -758,6 +844,11 @@ class Game:
             if self.use_gpu and len(self.entities) > 20:
                 try:
                     self.gpu_update_entities()
+                    # The GPU pass moves every entity via vectorized AI; override
+                    # the possessed one so player input wins.
+                    if self.possessed_entity is not None:
+                        self.possessed_entity.apply_player_control(
+                            width, height, self.edge_wrap)
                 except Exception as e:
                     # GPU failed at runtime, disable and fall back to CPU
                     print(f"GPU update failed: {type(e).__name__}, switching to CPU")
@@ -1017,7 +1108,10 @@ class Game:
         # Draw entities
         for entity in self.entities:
             entity.draw(self.screen)
-        
+
+        # Highlight the possessed entity with a pulsing ring + "YOU" label.
+        self.draw_possession_marker()
+
         # Draw UI panel
         self.draw_ui()
         
@@ -1036,6 +1130,23 @@ class Game:
         
         pygame.display.flip()
     
+    def draw_possession_marker(self):
+        """Draw a pulsing highlight ring and label over the possessed entity."""
+        entity = self.possessed_entity
+        if entity is None:
+            return
+        cx = int(entity.x)
+        cy = int(entity.y)
+        # Pulse the ring radius so the controlled entity is easy to track.
+        pulse = 4 + int(3 * (0.5 + 0.5 * math.sin(self.frame_count * 0.15)))
+        radius = int(entity.size / 2) + pulse
+        pygame.draw.circle(self.screen, YELLOW, (cx, cy), radius, 3)
+
+        # "YOU" tag floating above the entity.
+        label = self.small_font.render("YOU", True, YELLOW)
+        label_rect = label.get_rect(center=(cx, cy - radius - 10))
+        self.screen.blit(label, label_rect)
+
     def draw_ui(self):
         """Draw the UI panel."""
         panel_x = self.game_area.width + 10
@@ -1075,6 +1186,12 @@ class Game:
         # Draw initial count display
         count_text = self.small_font.render(f"Initial: {self.initial_count} per type", True, WHITE)
         self.screen.blit(count_text, (panel_x, y + 45))
+
+        # Show what the player is currently controlling, if anything.
+        if self.possessed_entity is not None:
+            ctrl_text = self.small_font.render(
+                f"Controlling: {self.possessed_entity.entity_type}", True, YELLOW)
+            self.screen.blit(ctrl_text, (panel_x, y + 68))
         
         # Draw buttons
         for button in self.buttons:
@@ -1088,13 +1205,16 @@ class Game:
         
         # Instructions at the bottom of the screen
         instructions = [
-            "SPACE: Pause | R: Restart | Click: Add | ESC: Quit"
+            "SPACE: Pause | R: Restart | ESC: Quit",
+            "L-Click: Add | R-Click: Possess",
+            "WASD / Arrows: Move possessed",
         ]
-        
-        y = self.screen_height - 30
+
+        y = self.screen_height - 30 - (len(instructions) - 1) * 22
         for line in instructions:
             text = self.small_font.render(line, True, WHITE)
             self.screen.blit(text, (panel_x, y))
+            y += 22
     
     def draw_game_over(self):
         """Draw the game over screen."""

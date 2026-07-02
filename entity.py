@@ -46,6 +46,12 @@ class Entity:
         self.target = None
         self.flee_from = None
 
+        # Possession: when True the entity ignores its AI and moves according
+        # to _ctrl_vx / _ctrl_vy, which the Game sets from keyboard input.
+        self.possessed = False
+        self._ctrl_vx = 0.0
+        self._ctrl_vy = 0.0
+
         # Shared neighbor-scan cache. Tick is the update-tick at which
         # _cache_data was populated; mismatched tick means stale and ignored.
         self._cache_tick = -1
@@ -325,6 +331,11 @@ class Entity:
         move as if they were at the leader's position relative to those
         targets. Repulsion is always computed locally.
         """
+        # Player-controlled entities bypass the AI entirely.
+        if self.possessed:
+            self.apply_player_control(screen_width, screen_height, edge_wrap)
+            return
+
         sx = self.x
         sy = self.y
         my_type = self.entity_type
@@ -515,6 +526,38 @@ class Entity:
                 self.y = screen_height - margin
                 self.vy *= -1
     
+    def apply_player_control(self, screen_width, screen_height, edge_wrap=False):
+        """Move under direct player control instead of running the AI.
+
+        Velocity is taken from _ctrl_vx / _ctrl_vy (set by the Game from the
+        current keyboard state). Edges clamp/wrap the same way the AI path does,
+        but walls don't bounce the velocity — that would fight the player.
+        """
+        self.vx = self._ctrl_vx
+        self.vy = self._ctrl_vy
+        self.x += self.vx
+        self.y += self.vy
+
+        margin = int(self.size) // 2
+        if edge_wrap:
+            if self.x < -margin:
+                self.x = screen_width + margin
+            elif self.x > screen_width + margin:
+                self.x = -margin
+            if self.y < -margin:
+                self.y = screen_height + margin
+            elif self.y > screen_height + margin:
+                self.y = -margin
+        else:
+            if self.x < margin:
+                self.x = margin
+            elif self.x > screen_width - margin:
+                self.x = screen_width - margin
+            if self.y < margin:
+                self.y = margin
+            elif self.y > screen_height - margin:
+                self.y = screen_height - margin
+
     def distance_to(self, other):
         """Calculate distance to another entity."""
         return math.sqrt((self.x - other.x)**2 + (self.y - other.y)**2)

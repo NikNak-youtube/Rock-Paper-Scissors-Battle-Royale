@@ -67,6 +67,11 @@ YELLOW = (255, 255, 100)
 ENTITY_SIZE = 40
 ENTITY_SPEED = 2
 INITIAL_COUNT = 15  # Initial count per type
+
+# Possession: the player can right-click an entity to take direct control of
+# it, steering with WASD / arrow keys. The controlled entity ignores its AI
+# but still collides (and can convert or be converted) like any other.
+PLAYER_CONTROL_SPEED = 4.0  # Movement speed of a possessed entity (px/frame)
 MAX_ENTITIES = 6000  # Total simulation cap across all types (per-type cap = MAX_ENTITIES // 3)
 SAME_TYPE_REPEL_RADIUS = 50  # Radius for soft collision between same types
 SAME_TYPE_REPEL_STRENGTH = 0.5  # How strongly same types push each other away
